@@ -1,5 +1,7 @@
 # Software Factory full-build pack v6.3
 
+[![CI](https://github.com/moslembabaee/software-factory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moslembabaee/software-factory/actions/workflows/ci.yml)
+
 This is a specification pack, not implemented software. v6.3 preserves all v6.2 files and adds binding consumer-experience requirements 49–53, covering simple-mode workflow, verified previews, visual feedback, cost, recovery, delivery and test gates. See docs/00_START_HERE.md.
 
 # Software Factory Full Build Pack v6.2
@@ -129,3 +131,46 @@ run's log link, including when CI times out. It uses a separate `workflow_run`
 notification so fork PRs can receive comments without granting write access to
 the code under test. This notification workflow must be on the default branch
 to receive events; it never checks out PR code or downloads run artifacts.
+
+Releases use `.github/workflows/release.yml`. Push a version tag such as
+`v0.1.1` to run the same full CI workflow against that exact commit before
+creating a GitHub Release. The release job alone has `contents: write` access.
+Version tags must use `vMAJOR.MINOR.PATCH`, optionally with a prerelease or build
+suffix; prerelease versions are marked as prereleases on GitHub.
+
+After this workflow reaches `main` and main CI succeeds, it automatically
+creates the initial placeholder `v0.1.0` tag and release at the validated
+commit. The bootstrap skips an existing tag and waits for newer main commits
+to pass CI. It publishes directly after validation because tags created with
+`GITHUB_TOKEN` do not trigger another workflow. Later main pushes do not create
+additional versions. Existing releases are preserved when a workflow is rerun.
+
+Write Conventional Commits such as `feat(api): add project search` or
+`fix(storage): preserve tenant isolation`. `.versionrc` controls changelog
+sections, hidden commit types, and GitHub links. Release notes are generated
+from reachable commit messages since the previous version tag (or all history
+for the first release), with **What's new**, **Breaking changes**, and
+**Migration notes** sections. Mark breaking changes with `!` or a
+`BREAKING CHANGE:` / `BREAKING-CHANGE:` footer, including for hidden commit
+types. Add upgrade instructions in a `MIGRATION:` or `MIGRATION NOTES:` footer;
+multiline footer text is retained. For example:
+
+```text
+feat(api)!: rename project status
+
+BREAKING CHANGE: The state field is now named status.
+MIGRATION: Update API clients to read and write status.
+```
+
+Preview notes locally without creating a tag or release:
+
+```sh
+npm run release:notes -- v0.1.0 HEAD
+```
+
+To publish a subsequent version, tag the intended commit and push the tag:
+
+```sh
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin v0.1.1
+```

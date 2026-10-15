@@ -13,7 +13,7 @@ function fixture(unsafe = false) {
   const release = vi.fn();
   const client = { query, release } as unknown as pg.PoolClient;
   const connect = vi.fn().mockResolvedValue(client);
-  const database = new PostgresDatabase({ connect } as unknown as pg.Pool);
+  const database = new PostgresDatabase({ connect });
   return { database, query, release, connect };
 }
 

@@ -23,6 +23,7 @@
     "migrate:down": "node --import tsx packages/storage/src/migrate.ts down",
     "migrate:verify": "node --import tsx packages/storage/src/verify-migrations.ts",
     "db:seed": "node --import tsx packages/storage/src/seed.ts",
+    "release:notes": "node scripts/release-notes.mjs",
     "test:e2e": "vitest run --config tests/e2e/vitest.config.ts",
     "test": "vitest run && node --test tests/tooling/*.test.mjs"
   },

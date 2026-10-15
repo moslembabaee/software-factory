@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || 'v0.1.0' }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - name: Select tag and exact commit
+        id: release
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const initial = context.eventName === 'workflow_run';
+            const tag = initial ? 'v0.1.0' : context.ref.replace('refs/tags/', '');
+            if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag)) {
+              throw new Error(`Expected a version tag such as v0.1.0; got ${tag}`);
+            }
+            if (initial) {
+              try {
+                await github.rest.git.getRef({ ...context.repo, ref: `tags/${tag}` });
+                core.info(`${tag} already exists; initial release bootstrap is complete.`);
+                return;
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+              const main = await github.rest.git.getRef({ ...context.repo, ref: 'heads/main' });
+              if (main.data.object.sha !== context.payload.workflow_run.head_sha) {
+                core.info('A newer main commit exists; wait for its CI run.');
+                return;
+              }
+            }
+            core.setOutput('publish', 'true');
+            core.setOutput('tag', tag);
+            core.setOutput('sha', initial ? context.payload.workflow_run.head_sha : context.sha);
+
+  ci:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  release:
+    needs: [prepare, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout validated commit and full tag history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Node LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      - name: Generate Conventional Commits release notes
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: node scripts/release-notes.mjs "$RELEASE_TAG" HEAD > "$RUNNER_TEMP/release-notes.md"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          INITIAL_RELEASE: ${{ github.event_name == 'workflow_run' }}
+        run: |
+          # Retry safely without replacing an existing release's notes.
+          if gh release view "$RELEASE_TAG" --json tagName > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+          args=(--verify-tag)
+          if [ "$INITIAL_RELEASE" = true ]; then
+            # GITHUB_TOKEN-created tags do not trigger push workflows.
+            # CI already passed for this SHA, so create its tag and release together.
+            args=(--target "$RELEASE_SHA")
+          fi
+          version="${RELEASE_TAG%%+*}"
+          if [[ "$version" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}" \
+            --title "Software Factory $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -89,10 +89,11 @@
       "title": "Issue #8: Release pipeline: version tagging and changelog generation",
       "description": "## Description\nSet up a release workflow that creates version tags and generates changelogs based on conventional commits. Initial release tag: `v0.1.0`.\n\n## Deliverables\n- `.github/workflows/release.yml` triggered by pushing a tag matching `v*`\n- Release job that runs full CI first, then creates a GitHub Release\n- Conventional Commits changelog generation (automatic from commit messages)\n- Release notes include: what's new, breaking changes, migration notes\n- Create an initial placeholder `v0.1.0` release after main CI passes\n\n## Acceptance Criteria\n- [ ] Pushing `v0.1.0` tag triggers the workflow\n- [ ] Full CI passes before release is created\n- [ ] GitHub Release is created with auto-generated release notes\n- [ ] `.versionrc` or changelog config exists at repo root\n- [ ] README badge shows CI status\n\nReference: Closes #8",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 8
+      "github_issue_number": 8,
+      "completed_at": "2026-10-15T16:45:24.874785+00:00"
     },
     {
       "id": "T-ISSUE-9",
@@ -141,7 +142,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 16,
-      "completed_at": "2026-10-15T16:28:49.813040+00:00"
+      "completed_at": "2026-10-15T16:28:49.813040+00:00",
+      "closed_at": "2026-10-15T16:28:53Z"
     },
     {
       "id": "T-003",

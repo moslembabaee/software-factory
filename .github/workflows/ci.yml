@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to validate for a release
+        required: true
+        type: string
   push:
     branches: ["**"]
     paths-ignore: ["docs/**"]
@@ -22,6 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - name: Setup Node LTS and npm cache
         uses: actions/setup-node@v4

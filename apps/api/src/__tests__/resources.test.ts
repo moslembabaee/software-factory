@@ -20,19 +20,20 @@ function fixture(authenticated = true) {
       return Promise.resolve({ rows: [{ id: resourceId, tenant_id: tenantId, project_id: resourceId, objective: "Build it", state: "open", version: "0", name: "Project", kind: "work", target_id: resourceId, from_ref: resourceId, to_ref: actorId }] });
     });
   const database: TenantDatabase = {
-    withTenant: vi.fn(async (_identity, operation) => operation({ query } as unknown as pg.PoolClient)),
+    withTenant: (_identity, operation) => operation({ query } as unknown as pg.PoolClient),
   };
+  const withTenant = vi.spyOn(database, "withTenant");
   const app = buildApp({ database, ...(authenticated ? { authenticate: () => ({ tenantId, actorId }) } : {}) });
   apps.push(app);
-  return { app, database, query };
+  return { app, withTenant, query };
 }
 
 describe("resource API", () => {
   it("fails closed without trusted authentication despite client identity headers", async () => {
-    const { app, database } = fixture(false);
+    const { app, withTenant } = fixture(false);
     const response = await app.inject({ method: "GET", url: "/api/v1/projects", headers: { "x-tenant-id": tenantId, "x-actor-id": actorId, authorization: "Bearer unverified" } });
     expect(response.statusCode).toBe(401);
-    expect(database.withTenant).not.toHaveBeenCalled();
+    expect(withTenant).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({ code: "FORBIDDEN", correlation_id: response.headers["x-request-id"] });
   });
 
@@ -42,7 +43,7 @@ describe("resource API", () => {
     ["references", { kind: "work", target_id: resourceId }, { kind: "artifact" }],
     ["relations", { kind: "depends_on", from_ref: resourceId, to_ref: actorId }, { kind: "related" }],
   ])("provides create, list, get, patch and delete for %s", async (name, create, update) => {
-    const { app, database, query } = fixture();
+    const { app, withTenant, query } = fixture();
     const root = `/api/v1/${name}`;
     const created = await app.inject({ method: "POST", url: root, payload: create, headers: { "idempotency-key": "resource-test-key" } });
     expect(created.statusCode).toBe(201);
@@ -53,7 +54,7 @@ describe("resource API", () => {
     const removed = await app.inject({ method: "DELETE", url: `${root}/${resourceId}` });
     expect(removed.statusCode).toBe(204);
     expect(removed.body).toBe("");
-    expect(database.withTenant).toHaveBeenCalledWith({ tenantId, actorId }, expect.any(Function));
+    expect(withTenant).toHaveBeenCalledWith({ tenantId, actorId }, expect.any(Function));
     expect(query.mock.calls.filter(([sql]) => !sql.startsWith("SELECT id FROM actors")).every(([, values]) => values?.includes(tenantId))).toBe(true);
     if (name === "works") {
       expect(query.mock.calls.find(([sql]) => sql.startsWith('INSERT INTO "works"'))?.[1]).toEqual([tenantId, resourceId, "Build it", actorId]);
@@ -72,10 +73,10 @@ describe("resource API", () => {
     ["GET", "/api/v1/projects/invalid", undefined],
     ["GET", "/api/v1/projects?limit=101", undefined],
   ] as const)("validates %s %s before touching storage", async (method, url, payload) => {
-    const { app, database } = fixture();
+    const { app, withTenant } = fixture();
     const response = await app.inject({ method, url, headers: { "idempotency-key": "resource-test-key" }, ...(payload ? { payload } : {}) });
     expect(response.statusCode).toBe(422);
-    expect(database.withTenant).not.toHaveBeenCalled();
+    expect(withTenant).not.toHaveBeenCalled();
   });
 
   it("parameterizes user text and uses only the resolved identity", async () => {

@@ -47,10 +47,10 @@ export const runCommand: CommandRunner = (executable, args, options) => {
       bytes += Math.min(available, chunk.length);
       if (chunk.length > available) stop("output_limit");
     };
-    child.stdout.on("data", (chunk: Buffer) => capture(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => capture(stderr, chunk));
-    const timer = setTimeout(() => stop("timed_out"), options.timeoutMs);
-    const abort = () => stop("cancelled");
+    child.stdout.on("data", (chunk: Buffer) => { capture(stdout, chunk); });
+    child.stderr.on("data", (chunk: Buffer) => { capture(stderr, chunk); });
+    const timer = setTimeout(() => { stop("timed_out"); }, options.timeoutMs);
+    const abort = () => { stop("cancelled"); };
     options.signal?.addEventListener("abort", abort, { once: true });
     // Cover an abort between the initial check and registering the listener.
     if (options.signal?.aborted) abort();

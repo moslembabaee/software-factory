@@ -5,6 +5,10 @@ import type {
 } from "@software-factory/factory-core";
 import { SandboxError } from "./sandbox.js";
 
+function confirmsCleanup(result: { cleanupConfirmed: unknown }): boolean {
+  return result.cleanupConfirmed === true;
+}
+
 /** Executes an already leased dispatch; durable lifecycle authority stays in Core/SQL. */
 export class ExecutionWorker {
   constructor(private readonly queue: WorkQueue, private readonly sandbox: ExecutionSandbox) {}
@@ -30,7 +34,7 @@ export class ExecutionWorker {
     // Stop on local lease expiry as well as caller cancellation. The database's
     // fencing/clock check at ack remains authoritative if clocks differ.
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    const abort = () => { controller.abort(); };
     signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(abort, remaining);
     try {
@@ -38,7 +42,7 @@ export class ExecutionWorker {
       if (controller.signal.aborted || result.status === "cancelled") {
         throw new SandboxError("Execution cancelled or lease expired; do not acknowledge", result.sandboxRef);
       }
-      if (result.executionId !== current.id || result.tenantId !== identity.tenantId || !result.cleanupConfirmed) {
+      if (result.executionId !== current.id || result.tenantId !== identity.tenantId || !confirmsCleanup(result)) {
         throw new SandboxError("Sandbox result does not match this dispatch");
       }
       await this.queue.ack(identity, {

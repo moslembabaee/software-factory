@@ -61,7 +61,8 @@ const resourceSchemas: Record<string, object> = {
 };
 const listQuery = { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, default: 50 }, offset: { type: "integer", minimum: 0, maximum: 1000000, default: 0 } } };
 function inputSchema(schema: z.ZodType): object {
-  const { $schema: _dialect, ...json } = z.toJSONSchema(schema, { io: "input" });
+  const json = z.toJSONSchema(schema, { io: "input" });
+  delete json.$schema;
   return json;
 }
 
@@ -96,7 +97,7 @@ export function registerResources(
     const identity = request.identity;
     if (!identity) throw new ApiError(401, "FORBIDDEN", "Authentication required");
     return database.withTenant(identity, async (client) => {
-      const actor = await client.query(
+      const actor = await client.query<Record<string, unknown>>(
         "SELECT id FROM actors WHERE tenant_id = $1 AND id = $2",
         [identity.tenantId, identity.actorId],
       );
@@ -111,7 +112,7 @@ export function registerResources(
     app.get(`/${name}`, { schema: responseSchema(200, { type: "object", additionalProperties: false, required: ["items", "request_id"], properties: { items: { type: "array", items: itemSchema }, request_id: uuid } }, { querystring: listQuery }) }, async (request) => {
       const { limit, offset } = pagination.parse(request.query);
       const items = await scoped(request, async (client, identity) => {
-        const result = await client.query(
+        const result = await client.query<Record<string, unknown>>(
           `SELECT * FROM ${table} WHERE tenant_id = $1 ORDER BY id LIMIT $2 OFFSET $3`,
           [identity.tenantId, limit, offset],
         );
@@ -122,7 +123,7 @@ export function registerResources(
     app.get(`/${name}/:id`, { schema: responseSchema(200, itemSchema, { params: idParams }) }, async (request) => {
       const { id: resourceId } = params.parse(request.params);
       const item = await scoped(request, async (client, identity) => {
-        const result = await client.query(
+        const result = await client.query<Record<string, unknown>>(
           `SELECT * FROM ${table} WHERE tenant_id = $1 AND id = $2`,
           [identity.tenantId, resourceId],
         );
@@ -147,8 +148,8 @@ export function registerResources(
           ...(resource.creator ? { created_by: identity.actorId } : {}),
         };
         const columns = Object.keys(data);
-        const result = await client.query(
-          `INSERT INTO ${resource.table} (${columns.join(", ")}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(", ")}) RETURNING *`,
+        const result = await client.query<Record<string, unknown>>(
+          `INSERT INTO ${resource.table} (${columns.join(", ")}) VALUES (${columns.map((_, i) => `$${String(i + 1)}`).join(", ")}) RETURNING *`,
           Object.values(data),
         );
         const row: Record<string, unknown> | undefined = result.rows[0];
@@ -165,20 +166,20 @@ export function registerResources(
       const { version: expectedVersion, ...data } = body;
       const item = await scoped(request, async (client, identity) => {
         const values: unknown[] = Object.values(data);
-        const assignments = Object.keys(data).map((column, i) => `${column} = $${i + 1}`);
+        const assignments = Object.keys(data).map((column, i) => `${column} = $${String(i + 1)}`);
         if (resource.versioned) assignments.push("version = version + 1");
         values.push(identity.tenantId, resourceId);
-        let where = `tenant_id = $${values.length - 1} AND id = $${values.length}`;
+        let where = `tenant_id = $${String(values.length - 1)} AND id = $${String(values.length)}`;
         if (resource.versioned) {
           values.push(expectedVersion);
-          where += ` AND version = $${values.length}`;
+          where += ` AND version = $${String(values.length)}`;
         }
-        const result = await client.query(
+        const result = await client.query<Record<string, unknown>>(
           `UPDATE ${resource.table} SET ${assignments.join(", ")} WHERE ${where} RETURNING *`, values,
         );
         if (!result.rows[0]) {
           if (resource.versioned) {
-            const exists = await client.query(`SELECT id FROM ${resource.table} WHERE tenant_id = $1 AND id = $2`, [identity.tenantId, resourceId]);
+            const exists = await client.query<Record<string, unknown>>(`SELECT id FROM ${resource.table} WHERE tenant_id = $1 AND id = $2`, [identity.tenantId, resourceId]);
             if (exists.rows.length) throw new ApiError(409, "CONFLICT", "Resource version has changed");
           }
           throw new ApiError(404, "NOT_FOUND", "Resource not found");
@@ -190,7 +191,7 @@ export function registerResources(
     app.delete(`/${resource.name}/:id`, { schema: { params: idParams, response: { ...errorResponses, 204: { type: "null" } } } }, async (request, reply) => {
       const { id: resourceId } = params.parse(request.params);
       await scoped(request, async (client, identity) => {
-        const result = await client.query(
+        const result = await client.query<Record<string, unknown>>(
           `DELETE FROM ${resource.table} WHERE tenant_id = $1 AND id = $2 RETURNING id`,
           [identity.tenantId, resourceId],
         );

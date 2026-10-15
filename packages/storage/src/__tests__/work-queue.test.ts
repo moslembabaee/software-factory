@@ -10,56 +10,57 @@ const executionId = "00000000-0000-4000-8000-000000000003";
 
 function fixture() {
   const database: TenantDatabase = { withTenant: vi.fn() };
-  return { database, queue: new PostgresWorkQueue(database) };
+  const withTenant = vi.spyOn(database, "withTenant");
+  return { withTenant, queue: new PostgresWorkQueue(database) };
 }
 
 describe("work queue input boundaries", () => {
   it.each([NaN, Infinity, 1.5, -2147483649, 2147483648])(
     "rejects invalid priority %s before opening a transaction",
     async (priority) => {
-      const { database, queue } = fixture();
+      const { withTenant, queue } = fixture();
       await expect(
         queue.enqueue(identity, { executionId, expectedVersion: 0, priority }),
       ).rejects.toBeInstanceOf(TypeError);
-      expect(database.withTenant).not.toHaveBeenCalled();
+      expect(withTenant).not.toHaveBeenCalled();
     },
   );
 
   it.each([0, -1, 1.5, Infinity, 86400001])(
     "rejects invalid lease duration %s",
     async (leaseMs) => {
-      const { database, queue } = fixture();
+      const { withTenant, queue } = fixture();
       await expect(
         queue.dequeue(identity, { workerId: "worker", leaseMs }),
       ).rejects.toBeInstanceOf(TypeError);
-      expect(database.withTenant).not.toHaveBeenCalled();
+      expect(withTenant).not.toHaveBeenCalled();
     },
   );
 
   it.each(["", "   ", "w".repeat(201)])(
     "rejects invalid worker IDs",
     async (workerId) => {
-      const { database, queue } = fixture();
+      const { withTenant, queue } = fixture();
       await expect(
         queue.dequeue(identity, { workerId, leaseMs: 1000 }),
       ).rejects.toBeInstanceOf(TypeError);
-      expect(database.withTenant).not.toHaveBeenCalled();
+      expect(withTenant).not.toHaveBeenCalled();
     },
   );
 
   it.each([0, -1, 1.5, Infinity, 1001])(
     "rejects invalid timeout batch limit %s",
     async (limit) => {
-      const { database, queue } = fixture();
+      const { withTenant, queue } = fixture();
       await expect(queue.timeout(identity, limit)).rejects.toBeInstanceOf(
         TypeError,
       );
-      expect(database.withTenant).not.toHaveBeenCalled();
+      expect(withTenant).not.toHaveBeenCalled();
     },
   );
 
   it("rejects invalid identifiers and unsafe counters", async () => {
-    const { database, queue } = fixture();
+    const { withTenant, queue } = fixture();
     await expect(
       queue.enqueue(identity, { executionId: "invalid", expectedVersion: 0 }),
     ).rejects.toBeInstanceOf(TypeError);
@@ -84,14 +85,12 @@ describe("work queue input boundaries", () => {
         outcome: "verifying",
       }),
     ).rejects.toBeInstanceOf(TypeError);
-    expect(database.withTenant).not.toHaveBeenCalled();
+    expect(withTenant).not.toHaveBeenCalled();
   });
 
   it("propagates database errors to callers", async () => {
-    const { database, queue } = fixture();
-    vi.mocked(database.withTenant).mockRejectedValue(
-      new Error("database unavailable"),
-    );
+    const { withTenant, queue } = fixture();
+    withTenant.mockRejectedValue(new Error("database unavailable"));
     await expect(
       queue.dequeue(identity, { workerId: "worker", leaseMs: 1000 }),
     ).rejects.toThrow("database unavailable");

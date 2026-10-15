@@ -16,17 +16,18 @@ export interface AppOptions {
 
 export function buildApp(options: AppOptions = {}): FastifyInstance {
   const app = Fastify({ genReqId: () => randomUUID(), bodyLimit: 1_048_576 });
-  const validators = [false, true].map((coerceTypes) => {
+  const createValidator = (coerceTypes: boolean) => {
     const validator = new Ajv({ coerceTypes, useDefaults: true, removeAdditional: false, allErrors: false });
     addFormats(validator);
     return validator;
-  });
-  app.setValidatorCompiler(({ schema, httpPart }) => validators[httpPart === "querystring" ? 1 : 0]!.compile(schema as object));
+  };
+  const validators = { body: createValidator(false), query: createValidator(true) };
+  app.setValidatorCompiler(({ schema, httpPart }) => (httpPart === "querystring" ? validators.query : validators.body).compile(schema as object));
   const pool = options.database ? undefined : createApplicationPool();
   const database = options.database ?? (pool ? new PostgresDatabase(pool) : undefined);
   if (!database) throw new Error("Database configuration required");
   if (pool) {
-    pool.on("error", (error) => app.log.error(error, "Idle database connection failed"));
+    pool.on("error", (error) => { app.log.error(error, "Idle database connection failed"); });
     app.addHook("onClose", async () => pool.end());
   }
   app.addHook("onRequest", async (request, reply) => {
@@ -73,8 +74,9 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     code: "NOT_FOUND", message: "Resource not found", correlation_id: request.id, retryable: false, safe_action: "Check the resource URL and your access",
   }));
 
-  app.register(async (api) => {
+  app.register((api, _options, done) => {
     registerResources(api, database, options.authenticate ?? (() => null));
+    done();
   }, { prefix: "/api/v1" });
 
   return app;

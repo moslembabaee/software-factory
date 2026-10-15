@@ -12,6 +12,7 @@ const databaseName = `sf_queue_${suffix}`;
 const roleName = `sf_queue_role_${suffix}`;
 
 describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
+  const pools: Partial<Record<"admin" | "owner" | "runtime", pg.Pool>> = {};
   let admin: pg.Pool;
   let owner: pg.Pool;
   let runtime: pg.Pool;
@@ -24,7 +25,7 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
 
   beforeAll(async () => {
     if (!databaseUrl) throw new Error("TEST_DATABASE_URL is required");
-    admin = new pg.Pool({
+    admin = pools.admin = new pg.Pool({
       connectionString: databaseUrl,
       connectionTimeoutMillis: 5000,
     });
@@ -37,7 +38,7 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
     roleCreated = true;
     const url = new URL(databaseUrl);
     url.pathname = `/${databaseName}`;
-    owner = new pg.Pool({
+    owner = pools.owner = new pg.Pool({
       connectionString: url.href,
       connectionTimeoutMillis: 5000,
     });
@@ -47,7 +48,7 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
     await owner.query(
       `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${roleName}`,
     );
-    runtime = new pg.Pool({
+    runtime = pools.runtime = new pg.Pool({
       connectionString: url.href,
       options: `-c role=${roleName}`,
       max: 12,
@@ -77,14 +78,14 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
   });
 
   afterAll(async () => {
-    await runtime?.end();
-    await owner?.end();
+    await pools.runtime?.end();
+    await pools.owner?.end();
     try {
       if (created)
         await admin.query(`DROP DATABASE ${databaseName} WITH (FORCE)`);
       if (roleCreated) await admin.query(`DROP ROLE ${roleName}`);
     } finally {
-      await admin?.end();
+      await pools.admin?.end();
     }
   });
 
@@ -193,7 +194,7 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
     );
     const leased = await Promise.all(
       Array.from({ length: 12 }, (_, i) =>
-        queue.dequeue(identity, { ...claim, workerId: `worker-${i}` }),
+        queue.dequeue(identity, { ...claim, workerId: `worker-${String(i)}` }),
       ),
     );
     const ids = leased.flatMap((result) => (result ? [result.id] : []));

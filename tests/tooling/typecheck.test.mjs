@@ -27,9 +27,10 @@ test("lint:tsc rejects type errors in every source workspace", () => {
     const parent = pattern.replace(/\/\*$/, "");
     return readdirSync(join(root, parent)).map((name) => join(parent, name));
   });
-  const sourceWorkspaces = workspaces.filter((workspace) =>
-    existsSync(join(root, workspace, "src")),
-  );
+  const sourceWorkspaces = [
+    ...workspaces.filter((workspace) => existsSync(join(root, workspace, "src"))),
+    "tests/e2e",
+  ];
 
   function copyConfig(relativePath) {
     const destination = join(fixture, relativePath);

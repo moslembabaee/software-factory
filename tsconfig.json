@@ -8,6 +8,7 @@
     { "path": "packages/flow" },
     { "path": "packages/runtime" },
     { "path": "packages/storage" },
+    { "path": "tests/e2e" },
     { "path": "./tsconfig.tools.json" }
   ]
 }

@@ -104,7 +104,8 @@
       "retry_count": 0,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 9,
-      "completed_at": "2026-10-15T12:24:56.805254+00:00"
+      "completed_at": "2026-10-15T12:24:56.805254+00:00",
+      "closed_at": "2026-10-15T12:25:01Z"
     },
     {
       "id": "T-ISSUE-11",
@@ -112,10 +113,11 @@
       "title": "Issue #11: Phase 0 integration smoke test: end-to-end skeleton verification",
       "description": "## Description\nCreate an integration smoke test that verifies the Phase 0 skeleton end-to-end: Docker Compose starts, migrations run, seed data is present, and the API placeholder responds.\n\n## Deliverables\n- `tests/e2e/phase0-smoke.test.ts` \u2014 vitest test that:\n  1. Shells out to `docker compose up -d`\n  2. Waits for DB health check\n  3. Runs migration via `npm run migrate:up`\n  4. Runs seed via `npm run db:seed`\n  5. Queries DB for tenants table (at least 1 row)\n  6. Verifies API placeholder starts and responds (HTTP 200 on health endpoint)\n  7. Tears down Docker Compose\n- CI workflow includes this test at the end of the pipeline\n\n## Acceptance Criteria\n- [ ] Smoke test script exists at `tests/e2e/phase0-smoke.test.ts`\n- [ ] Test runs in CI after migration verify\n- [ ] Test cleans up Docker resources on completion\n- [ ] Test is idempotent (can run repeatedly)\n- [ ] Fails with clear message if any component is missing\n\nReference: Closes #11",
       "assigned_agent": "codex",
-      "status": "approved",
+      "status": "completed",
       "retry_count": 0,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 11
+      "github_issue_number": 11,
+      "completed_at": "2026-10-15T12:29:51.380864+00:00"
     },
     {
       "id": "T-001",

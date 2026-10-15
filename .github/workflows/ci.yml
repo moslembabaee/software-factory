@@ -45,9 +45,18 @@ jobs:
         env:
           TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: npx vitest run packages/storage/src/__tests__/migrate.integration.test.ts
+      - name: Phase 0 end-to-end smoke test
+        run: npm run test:e2e
       - name: Database logs on failure
         if: failure()
         run: docker compose logs --no-color postgres
       - name: Clean up database
         if: always()
-        run: docker compose down --volumes --remove-orphans
+        run: |
+          docker compose down --volumes --remove-orphans
+          # Also cover interrupted smoke tests that could not reach afterAll.
+          for project in $(docker ps -a --filter 'label=com.docker.compose.project' --format '{{.Label "com.docker.compose.project"}}' | sort -u); do
+            case "$project" in
+              sf-phase0-smoke-*) docker compose --project-name "$project" down --volumes --remove-orphans ;;
+            esac
+          done

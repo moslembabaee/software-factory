@@ -71,6 +71,21 @@ the tests create and delete a disposable database and exercise both npm
 commands, constraints, concurrency, and rollback. Without this variable, the
 live tests are skipped.
 
+Run `npm run db:seed` after `migrate:up` to create a development tenant. The seed
+uses a fixed tenant ID and preserves existing rows when repeated.
+
+Run `npm run test:e2e` for the Phase 0 integration smoke test in
+`tests/e2e/phase0-smoke.test.ts`. It requires Docker Compose v2 and an accessible
+Docker daemon; missing prerequisites fail with a component-specific message.
+This suite runs separately from `npm test`, which does not require Docker.
+It starts the repository's Compose stack under a unique project name with a
+temporary PostgreSQL port, waits for the database health check, runs migrations
+and seeds twice to verify repeatability, queries the seeded tenants, and starts
+the Fastify placeholder on a temporary port to check `GET /health` over HTTP.
+It uses its own database regardless of `DATABASE_URL` and removes its containers,
+network, and volumes after success or failure. The default development Compose
+port remains 5432; set `POSTGRES_PORT` to choose a different host port.
+
 `.github/workflows/ci.yml` runs on pushes to every branch and pull requests to
 `main`, skipping changes confined to `docs/**`. It installs Node LTS and locked
 npm dependencies with an npm cache, then runs strict ESLint, the complete
@@ -78,8 +93,10 @@ TypeScript project build, and unit tests. It starts PostgreSQL 16 through the
 development Compose configuration, runs `migrate:up`, checks all sixteen domain
 tables and `_migrations` with `migrate:verify`, and runs `migrate:down`. The live
 migration suite then checks constraints, concurrency, failure recovery, and
-rollback against a disposable database. Logs are printed on failure and Compose
-volumes are removed on exit. The validation job has a nine-minute timeout.
+rollback against a disposable database. Finally, `test:e2e` verifies the Phase 0
+skeleton end-to-end. Logs are printed on failure and Compose volumes are removed
+on exit, including a fallback cleanup for interrupted smoke tests. The validation
+job has a nine-minute timeout.
 
 `.github/workflows/ci-notify.yml` comments on the PR or commit with the failed
 run's log link, including when CI times out. It uses a separate `workflow_run`

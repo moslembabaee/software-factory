@@ -7,11 +7,13 @@ import Fastify, { type FastifyInstance } from "fastify";
 export function buildApp(): FastifyInstance {
   const app = Fastify();
 
-  app.get("/health", async () => ({
-    status: "ok",
-    service: "software-factory-api",
-    phase: 0,
-  }));
+  app.get("/health", (_request, reply) => {
+    return reply.send({
+      status: "ok",
+      service: "software-factory-api",
+      phase: 0,
+    });
+  });
 
   return app;
 }

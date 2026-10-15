@@ -123,7 +123,7 @@ def execute_agent_task(agent: str, prompt: str, is_retry: bool = False) -> tuple
         return run_cmd(cmd, timeout=360)
 
     elif agent == "antigravity":
-        cmd = f'agy -p {shlex.quote(prompt)} --model gemini-3.8-flash-high --effort medium --dangerously-skip-permissions --print-timeout 6m'
+        cmd = f'agy -p {shlex.quote(prompt)} --model gemini-3.8-flash-high --dangerously-skip-permissions --print-timeout 6m'
         return run_cmd(cmd, timeout=360)
 
     else:

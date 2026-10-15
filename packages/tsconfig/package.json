@@ -1,0 +1,11 @@
+{
+  "name": "@software-factory/tsconfig",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared TypeScript configurations for the Software Factory monorepo",
+  "exports": {
+    "./base.json": "./base.json",
+    "./strict.json": "./strict.json"
+  }
+}

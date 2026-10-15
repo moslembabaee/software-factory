@@ -1,10 +1,4 @@
--- 001_initial_schema.sql
--- Phase 0: normative reference schema, verbatim from docs/45_STORAGE_SCHEMA.sql.
--- PostgreSQL 16+.
--- MANDATORY follow-up (application migrations, before any tenant data):
---   * RLS tenant policies on ALL tenant tables, with FORCE ROW LEVEL SECURITY;
---   * DB permissions/triggers preventing UPDATE/DELETE on events and settled ledger;
---   * remaining domain-specific tables from capability inventory + migration tests.
+-- PostgreSQL 16+ normative reference schema; append-only enforcement and RLS are mandatory in application migrations.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE tenants(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL);
 CREATE TABLE actors(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), subject text NOT NULL, UNIQUE(tenant_id,subject));
@@ -21,7 +15,7 @@ CREATE TABLE external_effects(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), ten
 CREATE TABLE budget_ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL, execution_id uuid NOT NULL, provider_request_id text, kind text NOT NULL CHECK(kind IN ('reserve','settle','refund','transfer')), amount_usd numeric(18,6) NOT NULL CHECK(amount_usd>=0), created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(tenant_id,provider_request_id), FOREIGN KEY(tenant_id,execution_id) REFERENCES executions(tenant_id,id));
 CREATE TABLE artifacts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL, execution_id uuid NOT NULL, object_key text NOT NULL, sha256 char(64) NOT NULL, media_type text NOT NULL, UNIQUE(tenant_id,id), FOREIGN KEY(tenant_id,execution_id) REFERENCES executions(tenant_id,id));
 CREATE TABLE "references"(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), kind text NOT NULL, target_id uuid NOT NULL, UNIQUE(tenant_id,id));
-CREATE TABLE "relations"(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), from_ref uuid NOT NULL, to_ref uuid NOT NULL, kind text NOT NULL, FOREIGN KEY(tenant_id,from_ref) REFERENCES "references"(tenant_id,id), FOREIGN KEY(tenant_id,to_ref) REFERENCES "references"(tenant_id,id));
+CREATE TABLE relations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), from_ref uuid NOT NULL, to_ref uuid NOT NULL, kind text NOT NULL, FOREIGN KEY(tenant_id,from_ref) REFERENCES "references"(tenant_id,id), FOREIGN KEY(tenant_id,to_ref) REFERENCES "references"(tenant_id,id));
 CREATE INDEX events_by_execution ON events(tenant_id,execution_id,sequence);
 CREATE INDEX execution_by_work ON executions(tenant_id,work_id,created_at);
 CREATE INDEX lease_expiry ON worker_leases(expires_at);

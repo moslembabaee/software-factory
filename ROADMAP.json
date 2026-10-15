@@ -52,10 +52,11 @@
       "title": "Issue #3: TypeScript strict shared config and compiler helpers",
       "description": "## Description\nCreate a shared TypeScript configuration package and helper utilities used by every workspace. Enforce strictest TypeScript settings project-wide.\n\n## Deliverables\n- `packages/tsconfig/` shared base config (extends approach)\n- TypeScript project references wired so `tsc --build` works from root\n- `tsup`, `tsx`, or `ts-node` runner config for dev mode\n- ESLint flat config with TypeScript-ESLint strict ruleset\n- Prettier config shared\n\n## Acceptance Criteria\n- [ ] `packages/tsconfig/base.json` exists with strict settings\n- [ ] `tsc --build` completes from root with zero errors\n- [ ] Root `.eslintrc.cjs` (or `eslint.config.js`) with `@typescript-eslint/strict` enabled\n- [ ] `lint:tsc` script in root `package.json` runs typecheck on all packages\n- [ ] Root `.prettierrc` with consistent formatting\n- [ ] Adding an intentional type error causes `lint:tsc` to fail\n\nReference: Closes #3",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 3
+      "github_issue_number": 3,
+      "completed_at": "2026-10-15T11:58:27.264421+00:00"
     },
     {
       "id": "T-ISSUE-5",

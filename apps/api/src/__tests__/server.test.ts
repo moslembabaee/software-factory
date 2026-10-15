@@ -12,7 +12,7 @@ describe("API server", () => {
     const app = buildApp();
     const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
+    const body: unknown = JSON.parse(response.body);
     expect(body).toMatchObject({
       status: "ok",
       service: "software-factory-api",

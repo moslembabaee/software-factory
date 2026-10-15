@@ -19,6 +19,7 @@ export const EventTypeSchema = z.enum([
   "approval.requested",
   "approval.decided",
   "agent.checkpoint.created",
+  "agent.checkpoint.recovered",
   "execution.completed",
   "execution.failed",
   "execution.cancelled",

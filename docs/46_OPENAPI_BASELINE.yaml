@@ -1,4 +1,4 @@
-# Operations marked x-phase: 1 are implemented and covered by tests/contract.
+# Operations marked x-phase: 1 or 3 are implemented and covered by tests/contract.
 # Unmarked approval and consumer operations describe later implementation phases.
 openapi: 3.1.0
 info:
@@ -144,6 +144,37 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
   /works/{id}/executions:
+    get:
+      operationId: listTaskExecutions
+      x-phase: 3
+      x-query-additional-properties: false
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      - name: limit
+        in: query
+        schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      - name: offset
+        in: query
+        schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 }
+      responses:
+        '200':
+          description: Execution attempts in creation order, including recovery lineage
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskExecution'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
     post:
       operationId: createExecution
       x-phase: 1
@@ -1099,6 +1130,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+  /executions/{id}/checkpoints:
+    get:
+      operationId: listAgentCheckpoints
+      x-phase: 3
+      x-query-additional-properties: false
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      - name: limit
+        in: query
+        schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      - name: offset
+        in: query
+        schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 }
+      responses:
+        '200':
+          description: Checkpoint metadata in sequence order; conversation content is private to workers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, sequence, step, worker_id, fence, created_at]
+                      properties:
+                        id: { type: string, format: uuid }
+                        sequence: { type: integer }
+                        step: { type: integer }
+                        worker_id: { type: string }
+                        fence: { type: integer }
+                        created_at: { type: string, format: date-time }
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
 components:
   securitySchemes:
     bearerAuth:
@@ -1194,6 +1266,22 @@ components:
         request_id:
           type: string
           format: uuid
+    TaskExecution:
+      type: object
+      required: [id, work_id, state, version, request_id, parent_execution_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        work_id: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [queued, running, awaiting_approval, verifying, needs_reconciliation, cancelling, completed, failed, cancelled, budget_exhausted]
+        version: { type: integer }
+        request_id: { type: string, format: uuid }
+        parent_execution_id:
+          anyOf:
+          - { type: string, format: uuid }
+          - { type: 'null' }
+        created_at: { type: string, format: date-time }
     Event:
       type: object
       required:

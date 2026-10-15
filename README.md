@@ -198,6 +198,53 @@ GRANT SELECT, INSERT, DELETE ON worker_leases TO sf_worker;
 GRANT SELECT ON artifacts, approvals TO sf_worker;
 ```
 
+Agent workers use `createAgentRuntime` from `@software-factory/runtime` with the
+same database, identity, worker ID, program resolver and lease settings. Supply
+`contextBinding(execution)` to resolve the current base SHA, policy version and
+model profile, and `runAgent(execution, program, session, signal)` for the bounded
+agent loop. `session.checkpoint` contains the restored conversation and step;
+call `await session.save(nextStep, context, stableCheckpointId)` after a finalized
+observation and before the next step. Context has `schemaVersion: 1`, the binding
+fields, `messages` (`role`, `content`, optional `toolCallId`), `summary` (string or
+null), and JSON `metadata`. Persist concise observations and artifact references;
+keep credentials and private reasoning out of context. Snapshots are limited to
+1 MiB. A checkpoint ID can retry an uncertain save without duplicating history.
+
+Migration `20261015_005_agent_checkpoints` adds immutable checkpoints and recovery
+lineage with forced tenant RLS. Checkpoint writes require the current execution
+version, worker, fence and unexpired database lease. The conversation, agent-run
+pointer, checkpoint event and outbox entry commit together. Add these worker grants:
+
+```sql
+GRANT SELECT, INSERT ON agent_checkpoints, agent_recoveries TO sf_worker;
+GRANT SELECT, INSERT, UPDATE ON agent_runs TO sf_worker;
+GRANT INSERT ON executions TO sf_worker;
+GRANT SELECT ON external_effects TO sf_worker;
+```
+
+After a crash, `runOnce()` expires the lease and preserves the attempt in
+`needs_reconciliation`. A trusted recovery controller may call
+`worker.checkpoints.recover(identity, { executionId, expectedVersion, baseSha,
+policyVersion, modelProfile })`. For a proposal-only attempt with a checkpoint,
+runnable Work, available unreserved budget, no approvals, and no external effects
+other than rejected effects, this atomically creates a new queued Execution linked
+to the original attempt. Repeated/concurrent recovery calls return the same new
+execution ID. The new attempt restores the selected conversation and advances
+past its saved step, with its own checkpoint sequence and lease. The old attempt
+and audit events remain intact. Changed base/policy/model, approvals, and effects
+that could be replayed require separate reconciliation; recovery refuses them.
+Agent callbacks still run through the existing sandbox/cleanup and independent
+verification contract and must honor cancellation.
+
+Authenticated observability reads are `GET /api/v1/works/:id/executions` (all task
+attempts with parent IDs and timestamps) and
+`GET /api/v1/executions/:id/checkpoints` (checkpoint metadata). Both accept
+`limit` (1–100, default 50) and `offset` (default 0), and use tenant-scoped reads.
+Conversation content is available only through the trusted storage adapter.
+Use the existing execution events endpoint for the full checkpoint/recovery audit.
+Run `TEST_DATABASE_URL=... npm test` to include actual PostgreSQL persistence,
+concurrency, RLS, crash recovery and rollback tests.
+
 The worker never accepts its tenant identity or source trust classification from
 event payloads. Existing sandbox isolation requirements still apply. Set
 `TEST_DATABASE_URL` to run the disposable PostgreSQL event wiring suite, including

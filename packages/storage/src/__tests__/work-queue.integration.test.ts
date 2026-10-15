@@ -566,6 +566,7 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
 
   it("rolls the queue migration down and reapplies it", async () => {
     await enqueue();
+    expect(await migrateDown(owner)).toBe("20261015_005_agent_checkpoints");
     expect(await migrateDown(owner)).toBe("20261015_004_event_delivery");
     expect(await migrateDown(owner)).toBe("20261015_003_work_queue");
     expect(
@@ -574,6 +575,7 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
     expect(await migrateUp(owner)).toEqual([
       "20261015_003_work_queue",
       "20261015_004_event_delivery",
+      "20261015_005_agent_checkpoints",
     ]);
   });
 });

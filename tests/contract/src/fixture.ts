@@ -33,7 +33,13 @@ const rows: Record<string, Record<string, unknown>> = {
     state: "open",
     version: "0",
   },
-  executions: { work_id: resourceId, state: "queued", version: "0" },
+  executions: {
+    work_id: resourceId,
+    state: "queued",
+    version: "0",
+    parent_execution_id: null,
+    created_at: new Date("2026-01-01T00:00:00Z"),
+  },
   references: { kind: "work", target_id: resourceId },
   relations: { kind: "depends_on", from_ref: resourceId, to_ref: actorId },
 };
@@ -98,6 +104,19 @@ export async function fixture(authenticated = true) {
       }
       if (sql.startsWith("SELECT * FROM events"))
         return Promise.resolve({ rows: [event] });
+      if (sql.includes("FROM agent_checkpoints"))
+        return Promise.resolve({
+          rows: [
+            {
+              id: resourceId,
+              sequence: "1",
+              step: 3,
+              worker_id: "worker",
+              fence: "1",
+              created_at: new Date("2026-01-01T00:00:00Z"),
+            },
+          ],
+        });
       if (sql.startsWith("SELECT id, sha256"))
         return Promise.resolve({ rows: [artifact] });
       if (sql.startsWith("SELECT id FROM actors"))

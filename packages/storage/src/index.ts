@@ -7,3 +7,15 @@ export {
   ExecutionConflictError,
 } from "./execution-history.js";
 export type { VerificationDecision } from "./execution-history.js";
+export {
+  PostgresAgentContext,
+  CheckpointConflictError,
+} from "./agent-context.js";
+export type {
+  AgentContext,
+  AgentMessage,
+  AgentCheckpoint,
+  ContextBinding,
+  SaveAgentCheckpoint,
+  RecoverAgentContext,
+} from "./agent-context.js";

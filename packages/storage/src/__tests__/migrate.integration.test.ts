@@ -13,6 +13,7 @@ import { verifyMigrationSchema } from "../verify-migrations.js";
 const execute = promisify(execFile);
 const databaseUrl = process.env["TEST_DATABASE_URL"];
 const databaseName = `sf_migrations_${randomBytes(8).toString("hex")}`;
+const checkpointDir = "20261015_005_agent_checkpoints";
 const deliveryDir = "20261015_004_event_delivery";
 const queueDir = "20261015_003_work_queue";
 const securityDir = "20261015_002_tenant_security";
@@ -35,6 +36,8 @@ const tenantTables = [
   "references",
   "relations",
   "work_queue",
+  "agent_checkpoints",
+  "agent_recoveries",
 ].sort();
 
 // CI supplies PostgreSQL 16. A supplied but unreachable URL fails instead of skipping.
@@ -143,10 +146,10 @@ describe
       GROUP BY contype ORDER BY contype
     `);
       expect(constraints.rows).toEqual([
-        { type: "c", count: 15, validated: true },
-        { type: "f", count: 26, validated: true },
-        { type: "p", count: 17, validated: true },
-        { type: "u", count: 15, validated: true },
+        { type: "c", count: 21, validated: true },
+        { type: "f", count: 29, validated: true },
+        { type: "p", count: 19, validated: true },
+        { type: "u", count: 18, validated: true },
       ]);
       const indexes = await pool.query<{
         indexname: string;
@@ -174,6 +177,8 @@ describe
         },
       ]);
       expect(await cli("down", true)).toContain("Would roll back");
+      expect(await tableNames()).toHaveLength(20);
+      expect(await cli("down")).toContain(`Rolled back: ${checkpointDir}`);
       expect(await tableNames()).toHaveLength(18);
       expect(await cli("down")).toContain(`Rolled back: ${deliveryDir}`);
       expect(await tableNames()).toHaveLength(18);
@@ -197,6 +202,7 @@ describe
       ).toBe(1);
       expect(await cli("down")).toContain("Nothing to roll back");
       await cli("up");
+      await cli("down");
       await cli("down");
       await cli("down");
       await cli("down");
@@ -296,6 +302,7 @@ describe
           [tenant, execution],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+      expect(await migrateDown(pool)).toBe(checkpointDir);
       expect(await migrateDown(pool)).toBe(deliveryDir);
       expect(await migrateDown(pool)).toBe(queueDir);
       expect(await migrateDown(pool)).toBe(securityDir);
@@ -311,9 +318,11 @@ describe
         securityDir,
         queueDir,
         deliveryDir,
+        checkpointDir,
       ]);
-      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(4);
+      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(5);
       const rolledBack = await Promise.all([
+        migrateDown(pool),
         migrateDown(pool),
         migrateDown(pool),
         migrateDown(pool),
@@ -324,6 +333,7 @@ describe
         securityDir,
         queueDir,
         deliveryDir,
+        checkpointDir,
       ]);
       expect(await tableNames()).toEqual(["_migrations"]);
     });
@@ -355,6 +365,7 @@ describe
           securityDir,
           queueDir,
           deliveryDir,
+          checkpointDir,
         ]);
       } finally {
         rmSync(directory, { recursive: true, force: true });

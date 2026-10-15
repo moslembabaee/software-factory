@@ -25,6 +25,14 @@ import {
 import { verifyMigrationSchema } from "../verify-migrations.js";
 
 const initialDir = "20261015_001_initial_schema";
+const checkpointDir = "20261015_005_agent_checkpoints";
+const checkpointSql = readMigrationSql(
+  join(MIGRATIONS_DIR, checkpointDir),
+  "up",
+);
+const checkpointChecksum = createHash("sha256")
+  .update(checkpointSql)
+  .digest("hex");
 const deliveryDir = "20261015_004_event_delivery";
 const deliverySql = readMigrationSql(join(MIGRATIONS_DIR, deliveryDir), "up");
 const deliveryChecksum = createHash("sha256").update(deliverySql).digest("hex");
@@ -134,6 +142,7 @@ describe("canonical initial migration", () => {
       securityDir,
       queueDir,
       deliveryDir,
+      checkpointDir,
     ]);
   });
 });
@@ -166,6 +175,7 @@ describe("migration discovery", () => {
         securityDir,
         queueDir,
         deliveryDir,
+        checkpointDir,
       ]).pending,
     ).toEqual([]);
   });
@@ -179,6 +189,7 @@ describe("transactional runner", () => {
       securityDir,
       queueDir,
       deliveryDir,
+      checkpointDir,
     ]);
     const statements = db.statements();
     expect(statements[0]).toBe("BEGIN");
@@ -199,6 +210,7 @@ describe("transactional runner", () => {
       { dir: securityDir, checksum: securityChecksum },
       { dir: queueDir, checksum: queueChecksum },
       { dir: deliveryDir, checksum: deliveryChecksum },
+      { dir: checkpointDir, checksum: checkpointChecksum },
     ]);
     expect(await migrateUp(db.pool)).toEqual([]);
     expect(db.statements()).not.toContain(upSql);
@@ -267,6 +279,7 @@ describe("transactional runner", () => {
       securityDir,
       queueDir,
       deliveryDir,
+      checkpointDir,
     ]);
     expect(up.statements()).not.toContain(upSql);
     expect(up.statements().at(-1)).toBe("ROLLBACK");
@@ -291,7 +304,13 @@ describe("transactional runner", () => {
 });
 
 describe("migration schema verification", () => {
-  const expectedTables = ["_migrations", ...tables, "work_queue"];
+  const expectedTables = [
+    "_migrations",
+    ...tables,
+    "work_queue",
+    "agent_checkpoints",
+    "agent_recoveries",
+  ];
 
   function schema(names: string[], insecure?: string, field = "rls_enabled") {
     return {

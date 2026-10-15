@@ -23,6 +23,8 @@ const requiredTables = [
   "references",
   "relations",
   "work_queue",
+  "agent_checkpoints",
+  "agent_recoveries",
 ];
 
 export async function verifyMigrationSchema(

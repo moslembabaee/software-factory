@@ -207,7 +207,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 21,
-      "completed_at": "2026-10-15T21:34:02.975702+00:00"
+      "completed_at": "2026-10-15T21:34:02.975702+00:00",
+      "closed_at": "2026-10-15T21:34:06Z"
     },
     {
       "id": "T-008",
@@ -215,10 +216,11 @@
       "title": "Agent context persistence and checkpoint recovery",
       "description": "Save agent conversation checkpoints per task, enable recovery after crash/timeout. Store task execution history in PostgreSQL for observability.",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 22
+      "github_issue_number": 22,
+      "completed_at": "2026-10-15T21:49:31.155493+00:00"
     },
     {
       "id": "T-009",

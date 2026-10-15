@@ -54,8 +54,8 @@ function expectError(
   });
 }
 
-describe("Phase 1 OpenAPI route inventory", () => {
-  it("covers every implemented route and requires every Phase 1 operation to be registered", () => {
+describe("Implemented OpenAPI route inventory", () => {
+  it("covers every implemented route and requires every implemented operation to be registered", () => {
     // The health route is synchronous; onRoute observes the asynchronously registered API plugin.
     const implemented = [
       ...new Set(["GET /health", ...context.routes.keys()]),
@@ -118,7 +118,7 @@ describe("Phase 1 OpenAPI route inventory", () => {
   );
 });
 
-describe("Phase 1 HTTP contracts", () => {
+describe("Implemented HTTP contracts", () => {
   it.each(operations)(
     "$method $path returns the documented success shape",
     async (endpoint) => {
@@ -181,7 +181,7 @@ describe("Phase 1 HTTP contracts", () => {
   const protectedEndpoints = operations.filter(
     ({ path }) => path !== "/health",
   );
-  it("requires trusted authentication on every Phase 1 API operation", async () => {
+  it("requires trusted authentication on every implemented API operation", async () => {
     const unauthenticated = await fixture(false);
     try {
       for (const endpoint of protectedEndpoints)
@@ -532,5 +532,107 @@ describe("Phase 1 HTTP contracts", () => {
         sha256: digest.toUpperCase(),
       }),
     ).not.toBeNull();
+  });
+
+  it("provides checkpoint metadata without exposing the saved conversation", async () => {
+    context.query
+      .mockResolvedValueOnce({ rows: [{ id: actorId }] })
+      .mockResolvedValueOnce({ rows: [{ id: resourceId }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: resourceId,
+            sequence: "2",
+            step: 4,
+            worker_id: "worker",
+            fence: "1",
+            created_at: new Date("2026-01-01T00:00:00Z"),
+            context: { messages: ["private conversation"] },
+          },
+        ],
+      });
+    const response = await context.app.inject({
+      method: "GET",
+      url: `/api/v1/executions/${resourceId}/checkpoints?limit=2&offset=1`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      items: [
+        {
+          id: resourceId,
+          sequence: 2,
+          step: 4,
+          worker_id: "worker",
+          fence: 1,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(response.body).not.toContain("private conversation");
+    expect(context.query.mock.calls.at(-1)?.[1]).toEqual([
+      tenantId,
+      resourceId,
+      2,
+      1,
+    ]);
+    expect(context.query.mock.calls.at(-1)?.[0]).toContain("ORDER BY sequence");
+  });
+
+  it("lists task attempts with recovery lineage and tenant-scoped pagination", async () => {
+    context.query
+      .mockResolvedValueOnce({ rows: [{ id: actorId }] })
+      .mockResolvedValueOnce({ rows: [{ id: resourceId }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: actorId,
+            work_id: resourceId,
+            parent_execution_id: resourceId,
+            state: "queued",
+            version: "0",
+            created_at: new Date("2026-01-01T00:00:00Z"),
+          },
+        ],
+      });
+    const response = await context.app.inject({
+      method: "GET",
+      url: `/api/v1/works/${resourceId}/executions?limit=2&offset=1`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      items: [
+        {
+          id: actorId,
+          work_id: resourceId,
+          parent_execution_id: resourceId,
+          state: "queued",
+          version: 0,
+        },
+      ],
+    });
+    expect(context.query.mock.calls.at(-1)?.[1]).toEqual([
+      tenantId,
+      resourceId,
+      2,
+      1,
+    ]);
+    expect(context.query.mock.calls.at(-1)?.[0]).toContain(
+      "ORDER BY created_at, id",
+    );
+  });
+
+  it.each([
+    `/works/${resourceId}/executions`,
+    `/executions/${resourceId}/checkpoints`,
+  ])("returns 404 for missing or tenant-hidden history at %s", async (path) => {
+    context.query
+      .mockResolvedValueOnce({ rows: [{ id: actorId }] })
+      .mockResolvedValueOnce({ rows: [] });
+    expectError(
+      await context.app.inject({ method: "GET", url: `/api/v1${path}` }),
+      404,
+      "NOT_FOUND",
+    );
+    expect(context.query).toHaveBeenCalledTimes(2);
   });
 });

@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type pg from "pg";
 import type { TenantIdentity } from "@software-factory/storage";
 import { ApiError } from "./errors.js";
-import { artifactsSchema, createExecutionBody, errorResponses, eventQuery, eventsSchema, executionSchema, idempotencyHeaders, idParams, responseSchema, wireInteger, wireResource } from "./schemas.js";
+import { artifactsSchema, createExecutionBody, errorResponses, eventQuery, eventsSchema, executionSchema, idempotencyHeaders, idParams, responseSchema, uuid, wireInteger, wireResource } from "./schemas.js";
 
 export type Scoped = <T>(request: FastifyRequest, operation: (client: pg.PoolClient, identity: TenantIdentity) => Promise<T>) => Promise<T>;
 interface Result { status: number; body: Record<string, unknown> | null }
@@ -50,6 +50,45 @@ async function appendEvent(client: pg.PoolClient, tenantId: string, executionId:
 }
 
 export function registerExecutionRoutes(app: FastifyInstance, scoped: Scoped): void {
+  const historyQuery = { type: "object", additionalProperties: false, properties: {
+    limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+    offset: { type: "integer", minimum: 0, maximum: 1_000_000, default: 0 },
+  } };
+  app.get<{ Params: { id: string }; Querystring: { limit: number; offset: number } }>("/works/:id/executions", {
+    schema: responseSchema(200, { type: "object", required: ["items"], properties: { items: { type: "array", items: {
+      ...executionSchema, required: [...executionSchema.required, "parent_execution_id", "created_at"],
+      properties: { ...executionSchema.properties, parent_execution_id: { anyOf: [uuid, { type: "null" }] }, created_at: { type: "string", format: "date-time" } },
+    } } } }, { params: idParams, querystring: historyQuery }),
+  }, async (request) => scoped(request, async (client, identity) => {
+    const work = await client.query("SELECT id FROM works WHERE tenant_id = $1 AND id = $2", [identity.tenantId, request.params.id]);
+    if (!work.rows.length) throw new ApiError(404, "NOT_FOUND", "Resource not found");
+    const result = await client.query<Record<string, unknown>>(
+      "SELECT * FROM executions WHERE tenant_id = $1 AND work_id = $2 ORDER BY created_at, id LIMIT $3 OFFSET $4",
+      [identity.tenantId, request.params.id, request.query.limit, request.query.offset],
+    );
+    return { items: result.rows.map((row) => ({ ...wireResource("executions", row, request.id),
+      parent_execution_id: row["parent_execution_id"],
+      created_at: row["created_at"] instanceof Date ? row["created_at"].toISOString() : row["created_at"],
+    })) };
+  }));
+
+  // Checkpoint observations deliberately contain no prompt or conversation content.
+  app.get<{ Params: { id: string }; Querystring: { limit: number; offset: number } }>("/executions/:id/checkpoints", {
+    schema: responseSchema(200, { type: "object", required: ["items"], properties: { items: { type: "array", items: {
+      type: "object", additionalProperties: false, required: ["id", "sequence", "step", "worker_id", "fence", "created_at"],
+      properties: { id: uuid, sequence: { type: "integer" }, step: { type: "integer" }, worker_id: { type: "string" }, fence: { type: "integer" }, created_at: { type: "string", format: "date-time" } },
+    } } } }, { params: idParams, querystring: historyQuery }),
+  }, async (request) => scoped(request, async (client, identity) => {
+    await requireExecution(client, identity.tenantId, request.params.id);
+    const result = await client.query<Record<string, unknown>>(
+      "SELECT id, sequence, step, worker_id, fence, created_at FROM agent_checkpoints WHERE tenant_id = $1 AND execution_id = $2 ORDER BY sequence LIMIT $3 OFFSET $4",
+      [identity.tenantId, request.params.id, request.query.limit, request.query.offset],
+    );
+    return { items: result.rows.map((row) => ({ ...row, sequence: wireInteger(row["sequence"]), fence: wireInteger(row["fence"]),
+      created_at: row["created_at"] instanceof Date ? row["created_at"].toISOString() : row["created_at"],
+    })) };
+  }));
+
   app.post<{ Params: { id: string }; Body: { base_sha: string; budget_cap_usd: number; parent_execution_id?: string } }>("/works/:id/executions", {
     schema: responseSchema(201, executionSchema, { params: idParams, headers: idempotencyHeaders, body: createExecutionBody }),
   }, async (request, reply) => {

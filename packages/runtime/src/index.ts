@@ -9,6 +9,11 @@ export { ExecutionWorker } from "./execution-worker.js";
 export { QueueSandboxDispatcher } from "./queue-dispatcher.js";
 export type { QueueDispatcherOptions } from "./queue-dispatcher.js";
 export { createQueueRuntime } from "./queue-runtime.js";
+export { createAgentRuntime } from "./agent-runtime.js";
+export type {
+  AgentRuntimeOptions,
+  AgentContextSession,
+} from "./agent-runtime.js";
 export type {
   ExecutionSandbox,
   SandboxLimits,

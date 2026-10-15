@@ -414,6 +414,7 @@ describe
     });
 
     it("reverts and reapplies delivery leases without losing pending events", async () => {
+      expect(await migrateDown(required(owner))).toBe("20261015_005_agent_checkpoints");
       expect(await migrateDown(required(owner))).toBe(
         "20261015_004_event_delivery",
       );
@@ -422,6 +423,7 @@ describe
       ).toHaveLength(1);
       expect(await migrateUp(required(owner))).toEqual([
         "20261015_004_event_delivery",
+        "20261015_005_agent_checkpoints",
       ]);
       expect(await runtime().runOnce()).toBe(5);
     });

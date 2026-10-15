@@ -78,7 +78,7 @@ export const baseline = resolve(source) as OpenApi;
 export const operations = Object.entries(baseline.paths).flatMap(
   ([path, methods]) =>
     Object.entries(methods)
-      .filter(([, operation]) => operation["x-phase"] === 1)
+      .filter(([, operation]) => [1, 3].includes(operation["x-phase"] ?? 0))
       .map(([method, operation]) => ({
         path,
         method: method.toUpperCase() as "GET" | "POST" | "PATCH" | "DELETE",

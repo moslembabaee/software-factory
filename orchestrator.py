@@ -30,7 +30,7 @@ LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "orchestrator.log"
 
-AGENT_CHAIN = ["codex", "antigravity", "claude"]
+AGENT_CHAIN = ["claude", "antigravity", "codex"]
 
 def log(msg: str):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -39,7 +39,7 @@ def log(msg: str):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-def run_cmd(cmd: str, timeout: int = 600, cwd: str = str(PROJECT_ROOT)) -> tuple[int, str]:
+def run_cmd(cmd: str, timeout: int = 720, cwd: str = str(PROJECT_ROOT)) -> tuple[int, str]:
     try:
         res = subprocess.run(
             cmd,
@@ -114,17 +114,17 @@ def reconcile_issue_before_dispatch(roadmap: dict, task: dict) -> bool:
 def execute_agent_task(agent: str, prompt: str, is_retry: bool = False) -> tuple[int, str]:
     log(f"Dispatching task to agent [{agent.upper()}] (retry={is_retry})...")
 
-    if agent == "codex":
-        cmd = f'codex exec --sandbox workspace-write -c \'model_reasoning_effort="high"\' {shlex.quote(prompt)}'
-        return run_cmd(cmd, timeout=360)
-
-    elif agent == "claude":
-        cmd = f'CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 claude -p {shlex.quote(prompt)} --max-turns 25'
-        return run_cmd(cmd, timeout=360)
+    if agent == "claude":
+        cmd = f'CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 claude -p {shlex.quote(prompt)} --max-turns 40'
+        return run_cmd(cmd, timeout=720)
 
     elif agent == "antigravity":
-        cmd = f'agy -p {shlex.quote(prompt)} --model gemini-3.8-flash-high --dangerously-skip-permissions --print-timeout 6m'
-        return run_cmd(cmd, timeout=360)
+        cmd = f'agy -p {shlex.quote(prompt)} --model gemini-3.8-flash-high --dangerously-skip-permissions --print-timeout 12m'
+        return run_cmd(cmd, timeout=720)
+
+    elif agent == "codex":
+        cmd = f'codex exec --sandbox workspace-write -c \'model_reasoning_effort="high"\' {shlex.quote(prompt)}'
+        return run_cmd(cmd, timeout=720)
 
     else:
         return -1, f"Unknown agent: {agent}"
@@ -194,7 +194,7 @@ Output ONLY a raw JSON array of 3 new tasks in this format (no markdown, no back
     "phase": "Continuous Polish & Evolution",
     "title": "Title here",
     "description": "Concrete requirements here",
-    "assigned_agent": "codex",
+    "assigned_agent": "claude",
     "status": "waiting_approval",
     "retry_count": 0,
     "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test"
@@ -274,7 +274,7 @@ Output ONLY a raw JSON array of 3 new tasks in this format (no markdown, no back
         if issue_num:
             run_cmd(f'gh issue edit {issue_num} --repo moslembabaee/software-factory --add-label "in-progress"', timeout=30)
 
-        assigned_agent = pending_task.get("assigned_agent", "codex")
+        assigned_agent = pending_task.get("assigned_agent", "claude")
         task_success = False
         task_closed = False
         error_output = None

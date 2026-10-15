@@ -2,6 +2,7 @@ services:
   web:
     build: .
     container_name: software-factory_web
+    restart: unless-stopped
     environment:
       PORT: "3003"
       API_DATABASE_URL: ${API_DATABASE_URL:-postgres://sf:sf_dev_pw@postgres:5432/software_factory}
@@ -23,6 +24,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: software_factory
       POSTGRES_USER: sf

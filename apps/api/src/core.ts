@@ -92,7 +92,7 @@ export function registerExecutionRoutes(app: FastifyInstance, scoped: Scoped): v
   }));
 
   app.post<{ Params: { id: string } }>("/executions/:id/cancel", {
-    schema: { params: idParams, headers: idempotencyHeaders, response: errorResponses },
+    schema: { params: idParams, headers: idempotencyHeaders, response: { ...errorResponses, 202: { type: "null" } } },
   }, async (request, reply) => {
     const result = await scoped(request, (client, identity) => idempotent(client, identity, request, async () => {
       const current = await client.query<{ state: string; version: string }>("SELECT state, version FROM executions WHERE tenant_id = $1 AND id = $2 FOR UPDATE", [identity.tenantId, request.params.id]);

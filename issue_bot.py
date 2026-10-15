@@ -277,8 +277,8 @@ def process_issues():
                         log(f"Issue #{num} task {t['id']} is now APPROVED/RE-APPROVED by maintainer!")
                 if "blocked" in labels:
                     run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked"')
-                if "in-progress" not in labels:
-                    run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "in-progress"')
+                # in-progress is managed only by orchestrator.py when an agent actually starts
+                pass
             else:
                 log(f"Issue #{num} is APPROVED. Analyzing complexity and decomposing into sub-tasks...")
                 subtasks = decompose_issue_into_subtasks(issue)
@@ -313,7 +313,7 @@ To ensure reliable execution and avoid session turn limits, this issue has been 
 
 The Tri-Agent Orchestra is beginning execution on **Part 1**..."""
                     run_cmd(f'gh issue comment {num} --repo {REPO} -b {shlex.quote(ack_msg)}')
-                    run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "in-progress" --remove-label "blocked"')
+                    run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked"')
                 else:
                     new_task = {
                         "id": task_id,
@@ -331,7 +331,7 @@ The Tri-Agent Orchestra is beginning execution on **Part 1**..."""
 
                     ack_msg = f"🚀 **Scheduled for Autonomous Development!**\n\nThis issue has been authorized and queued into the Tri-Agent Orchestra as `{task_id}`. Implementation is starting..."
                     run_cmd(f'gh issue comment {num} --repo {REPO} -b {shlex.quote(ack_msg)}')
-                    run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "in-progress" --remove-label "blocked"')
+                    run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked"')
                 log(f"Issue #{num} dispatched into ROADMAP.")
 
     if roadmap_modified:

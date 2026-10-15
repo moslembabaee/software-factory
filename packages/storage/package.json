@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@software-factory/factory-core": "*",
     "pg": "^8.23.1"
   },
   "devDependencies": {

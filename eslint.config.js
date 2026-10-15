@@ -21,6 +21,7 @@ export default defineConfig(
           "./apps/*/tsconfig.json",
           "./packages/*/tsconfig.json",
           "./tests/e2e/tsconfig.json",
+          "./tests/contract/tsconfig.json",
           "./tsconfig.tools.json",
         ],
         tsconfigRootDir: fileURLToPath(new URL(".", import.meta.url)),

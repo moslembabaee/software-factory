@@ -25,6 +25,9 @@ import {
 import { verifyMigrationSchema } from "../verify-migrations.js";
 
 const initialDir = "20261015_001_initial_schema";
+const queueDir = "20261015_003_work_queue";
+const queueSql = readMigrationSql(join(MIGRATIONS_DIR, queueDir), "up");
+const queueChecksum = createHash("sha256").update(queueSql).digest("hex");
 const securityDir = "20261015_002_tenant_security";
 const securitySql = readMigrationSql(join(MIGRATIONS_DIR, securityDir), "up");
 const securityChecksum = createHash("sha256").update(securitySql).digest("hex");
@@ -124,7 +127,9 @@ describe("canonical initial migration", () => {
 
   it("discovers the timestamp migration once, ignoring its compatibility alias", () => {
     expect(scanMigrations().map((migration) => migration.dir)).toEqual([
-      initialDir, securityDir,
+      initialDir,
+      securityDir,
+      queueDir,
     ]);
   });
 });
@@ -151,14 +156,21 @@ describe("migration discovery", () => {
   it("reports only unapplied migrations as pending", () => {
     const migrations = scanMigrations();
     expect(computeMigrationState(migrations, []).pending).toEqual(migrations);
-    expect(computeMigrationState(migrations, [initialDir, securityDir]).pending).toEqual([]);
+    expect(
+      computeMigrationState(migrations, [initialDir, securityDir, queueDir])
+        .pending,
+    ).toEqual([]);
   });
 });
 
 describe("transactional runner", () => {
   it("locks before reading history and commits schema with its checksum", async () => {
     const db = database();
-    expect(await migrateUp(db.pool)).toEqual([initialDir, securityDir]);
+    expect(await migrateUp(db.pool)).toEqual([
+      initialDir,
+      securityDir,
+      queueDir,
+    ]);
     const statements = db.statements();
     expect(statements[0]).toBe("BEGIN");
     expect(statements[1]).toContain("pg_advisory_xact_lock");
@@ -173,7 +185,11 @@ describe("transactional runner", () => {
   });
 
   it("does not execute an already applied migration", async () => {
-    const db = database([{ dir: initialDir, checksum: initialChecksum }, { dir: securityDir, checksum: securityChecksum }]);
+    const db = database([
+      { dir: initialDir, checksum: initialChecksum },
+      { dir: securityDir, checksum: securityChecksum },
+      { dir: queueDir, checksum: queueChecksum },
+    ]);
     expect(await migrateUp(db.pool)).toEqual([]);
     expect(db.statements()).not.toContain(upSql);
   });
@@ -236,7 +252,11 @@ describe("transactional runner", () => {
 
   it("previews up and down without changing schema or tracking state", async () => {
     const up = database();
-    expect(await migrateUp(up.pool, true)).toEqual([initialDir, securityDir]);
+    expect(await migrateUp(up.pool, true)).toEqual([
+      initialDir,
+      securityDir,
+      queueDir,
+    ]);
     expect(up.statements()).not.toContain(upSql);
     expect(up.statements().at(-1)).toBe("ROLLBACK");
     const down = database([{ dir: initialDir, checksum: initialChecksum }]);
@@ -260,7 +280,7 @@ describe("transactional runner", () => {
 });
 
 describe("migration schema verification", () => {
-  const expectedTables = ["_migrations", ...tables];
+  const expectedTables = ["_migrations", ...tables, "work_queue"];
 
   function schema(names: string[]) {
     return {

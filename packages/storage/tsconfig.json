@@ -4,5 +4,6 @@
     "rootDir": ".",
     "outDir": "./dist"
   },
-  "include": ["src/**/*.ts", "*.config.ts"]
+  "include": ["src/**/*.ts", "*.config.ts"],
+  "references": [{ "path": "../factory-core" }]
 }

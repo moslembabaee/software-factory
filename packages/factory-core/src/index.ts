@@ -11,6 +11,16 @@ export type { ValueObject } from "./value-object.js";
 
 export { WorkSchema, WorkStateSchema } from "./primitives/work.js";
 export type { Work, WorkState } from "./primitives/work.js";
+export type {
+  WorkQueue,
+  QueueIdentity,
+  QueueItem,
+  QueueStatus,
+  QueueOutcome,
+  EnqueueWork,
+  DequeueWork,
+  AcknowledgeWork,
+} from "./work-queue.js";
 export { ActorSchema, ActorKindSchema } from "./primitives/actor.js";
 export type { Actor, ActorKind } from "./primitives/actor.js";
 export {
@@ -18,6 +28,13 @@ export {
   ExecutionStateSchema,
 } from "./primitives/execution.js";
 export type { Execution, ExecutionState } from "./primitives/execution.js";
+export type {
+  ExecutionSandbox,
+  SandboxLimits,
+  SandboxProgram,
+  SandboxResult,
+  SandboxStatus,
+} from "./sandbox.js";
 export { EventSchema, EventTypeSchema } from "./primitives/event.js";
 export type { Event, EventType } from "./primitives/event.js";
 export { ReferenceSchema } from "./primitives/reference.js";

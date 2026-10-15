@@ -1,3 +1,5 @@
+# Operations marked x-phase: 1 are implemented and covered by tests/contract.
+# Unmarked approval and consumer operations describe later implementation phases.
 openapi: 3.1.0
 info:
   title: Software Factory API
@@ -12,6 +14,7 @@ paths:
   /works:
     post:
       operationId: createWork
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -33,6 +36,12 @@ paths:
                   minLength: 1
                   maxLength: 20000
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '201':
           description: Created
           content:
@@ -43,12 +52,51 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+    get:
+      operationId: listWorks
+      x-phase: 1
+      x-query-additional-properties: false
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkCollection'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /works/{id}:
     get:
       operationId: getWork
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/Id'
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '200':
           description: Work
           content:
@@ -57,9 +105,48 @@ paths:
                 $ref: '#/components/schemas/Work'
         '404':
           $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateWork
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    delete:
+      operationId: deleteWork
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204':
+          description: Deleted
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /works/{id}/executions:
     post:
       operationId: createExecution
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/Id'
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -85,6 +172,12 @@ paths:
                   type: string
                   format: uuid
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '201':
           description: Created
           content:
@@ -96,9 +189,16 @@ paths:
   /executions/{id}:
     get:
       operationId: getExecution
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/Id'
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '200':
           description: Execution
           content:
@@ -110,6 +210,7 @@ paths:
   /executions/{id}/events:
     get:
       operationId: listEvents
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/Id'
       - in: query
@@ -124,6 +225,12 @@ paths:
           maximum: 200
           default: 50
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '200':
           description: Events
           content:
@@ -144,10 +251,17 @@ paths:
   /executions/{id}/cancel:
     post:
       operationId: cancelExecution
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/Id'
       - $ref: '#/components/parameters/IdempotencyKey'
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '202':
           description: Cancellation requested
         '409':
@@ -155,9 +269,16 @@ paths:
   /executions/{id}/artifacts:
     get:
       operationId: listArtifacts
+      x-phase: 1
       parameters:
       - $ref: '#/components/parameters/Id'
       responses:
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '200':
           description: Artifacts
           content:
@@ -537,6 +658,447 @@ paths:
                 expected_version:
                   type: integer
                   minimum: 0
+  /health:
+    get:
+      operationId: getHealth
+      x-phase: 1
+      servers:
+        - url: /
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /projects:
+    get:
+      operationId: listProjects
+      x-phase: 1
+      x-query-additional-properties: false
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectCollection'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    post:
+      operationId: createProject
+      x-phase: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /projects/{id}:
+    get:
+      operationId: getProject
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    patch:
+      operationId: updateProject
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    delete:
+      operationId: deleteProject
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204':
+          description: Deleted
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /references:
+    get:
+      operationId: listReferences
+      x-phase: 1
+      x-query-additional-properties: false
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferenceCollection'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    post:
+      operationId: createReference
+      x-phase: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReferenceRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reference'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /references/{id}:
+    get:
+      operationId: getReference
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reference'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    patch:
+      operationId: updateReference
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReferenceRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reference'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    delete:
+      operationId: deleteReference
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204':
+          description: Deleted
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /relations:
+    get:
+      operationId: listRelations
+      x-phase: 1
+      x-query-additional-properties: false
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationCollection'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    post:
+      operationId: createRelation
+      x-phase: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRelationRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /relations/{id}:
+    get:
+      operationId: getRelation
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    patch:
+      operationId: updateRelation
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRelationRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    delete:
+      operationId: deleteRelation
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204':
+          description: Deleted
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /actors:
+    get:
+      operationId: listActors
+      x-phase: 1
+      x-query-additional-properties: false
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActorCollection'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /actors/{id}:
+    get:
+      operationId: getActor
+      x-phase: 1
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Actor'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /executions:
+    get:
+      operationId: listExecutions
+      x-phase: 1
+      x-query-additional-properties: false
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionCollection'
+        default:
+          description: API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
 components:
   securitySchemes:
     bearerAuth:
@@ -986,6 +1548,317 @@ components:
         evidence:
           type: array
           items: *id006
+    Health:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+        - phase
+        - request_id
+      properties:
+        status:
+          const: ok
+        service:
+          const: software-factory-api
+        phase:
+          const: 1
+        request_id:
+          type: string
+          format: uuid
+    ProjectCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - request_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        request_id:
+          type: string
+          format: uuid
+    Project:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - name
+        - request_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+    CreateProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          pattern: \S
+      required:
+        - name
+      additionalProperties: false
+    UpdateProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          pattern: \S
+      required:
+        - name
+      additionalProperties: false
+      minProperties: 1
+    WorkCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - request_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Work'
+        request_id:
+          type: string
+          format: uuid
+    UpdateWorkRequest:
+      type: object
+      properties:
+        objective:
+          type: string
+          minLength: 1
+          maxLength: 20000
+        version:
+          anyOf:
+            - type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            - type: string
+              pattern: ^(0|[1-9][0-9]{0,18})$
+      required:
+        - objective
+        - version
+      additionalProperties: false
+      minProperties: 1
+    ReferenceCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - request_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reference'
+        request_id:
+          type: string
+          format: uuid
+    Reference:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - kind
+        - target_id
+        - request_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        target_id:
+          type: string
+          format: uuid
+        request_id:
+          type: string
+          format: uuid
+    CreateReferenceRequest:
+      type: object
+      properties:
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          pattern: \S
+        target_id:
+          type: string
+          format: uuid
+          pattern: >-
+            ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+      required:
+        - kind
+        - target_id
+      additionalProperties: false
+    UpdateReferenceRequest:
+      type: object
+      properties:
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          pattern: \S
+        target_id:
+          type: string
+          format: uuid
+          pattern: >-
+            ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+      additionalProperties: false
+      minProperties: 1
+    RelationCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - request_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Relation'
+        request_id:
+          type: string
+          format: uuid
+    Relation:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - kind
+        - from_ref
+        - to_ref
+        - request_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        from_ref:
+          type: string
+          format: uuid
+        to_ref:
+          type: string
+          format: uuid
+        request_id:
+          type: string
+          format: uuid
+    CreateRelationRequest:
+      type: object
+      properties:
+        from_ref:
+          type: string
+          format: uuid
+          pattern: >-
+            ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        to_ref:
+          type: string
+          format: uuid
+          pattern: >-
+            ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          pattern: \S
+      required:
+        - from_ref
+        - to_ref
+        - kind
+      additionalProperties: false
+    UpdateRelationRequest:
+      type: object
+      properties:
+        from_ref:
+          type: string
+          format: uuid
+          pattern: >-
+            ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        to_ref:
+          type: string
+          format: uuid
+          pattern: >-
+            ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          pattern: \S
+      additionalProperties: false
+      minProperties: 1
+    ActorCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - request_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Actor'
+        request_id:
+          type: string
+          format: uuid
+    Actor:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - subject
+        - request_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        subject:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+    ExecutionCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - request_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Execution'
+        request_id:
+          type: string
+          format: uuid
   responses:
     Conflict:
       description: Version or idempotency conflict

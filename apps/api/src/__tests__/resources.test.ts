@@ -57,7 +57,7 @@ describe("resource API", () => {
     expect(query.mock.calls.filter(([sql]) => !sql.startsWith("SELECT id FROM actors")).every(([, values]) => values?.includes(tenantId))).toBe(true);
     if (name === "works") {
       expect(query.mock.calls.find(([sql]) => sql.startsWith('INSERT INTO "works"'))?.[1]).toEqual([tenantId, resourceId, "Build it", actorId]);
-      expect(query.mock.calls.find(([sql]) => sql.startsWith("UPDATE"))?.[0]).toContain("version = version + 1");
+      expect(query.mock.calls.find(([sql]) => sql.startsWith('UPDATE "works"'))?.[0]).toContain("version = version + 1");
     }
   });
 

@@ -7,7 +7,7 @@ import { idempotent, registerExecutionRoutes } from "./core.js";
 import { createWorkBody, errorResponses, executionSchema, idempotencyHeaders, idParams, responseSchema, uuid, wireResource, workSchema } from "./schemas.js";
 
 const id = z.uuid();
-const text = z.string().trim().min(1).max(10_000);
+const text = z.string().trim().min(1).max(10_000).regex(/\S/);
 const params = z.object({ id });
 const pagination = z.strictObject({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -159,7 +159,7 @@ export function registerResources(
       });
       return reply.code(item.status).send(item.body);
     });
-    app.patch(`/${resource.name}/:id`, { schema: responseSchema(200, itemSchema, { params: idParams, body: inputSchema(resource.update) }) }, async (request) => {
+    app.patch(`/${resource.name}/:id`, { schema: responseSchema(200, itemSchema, { params: idParams, body: { ...inputSchema(resource.update), minProperties: 1 } }) }, async (request) => {
       const { id: resourceId } = params.parse(request.params);
       const body = resource.update.parse(request.body);
       const { version: expectedVersion, ...data } = body;
@@ -187,7 +187,7 @@ export function registerResources(
       });
       return wireResource(resource.name, item, request.id);
     });
-    app.delete(`/${resource.name}/:id`, { schema: { params: idParams, response: errorResponses } }, async (request, reply) => {
+    app.delete(`/${resource.name}/:id`, { schema: { params: idParams, response: { ...errorResponses, 204: { type: "null" } } } }, async (request, reply) => {
       const { id: resourceId } = params.parse(request.params);
       await scoped(request, async (client, identity) => {
         const result = await client.query(

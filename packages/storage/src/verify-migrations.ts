@@ -1,4 +1,4 @@
-/** Verify the Phase 0 schema on the database targeted by the migration CLI. */
+/** Verify the application schema on the database targeted by the migration CLI. */
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type pg from "pg";
@@ -22,6 +22,7 @@ const requiredTables = [
   "artifacts",
   "references",
   "relations",
+  "work_queue",
 ];
 
 export async function verifyMigrationSchema(
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
   const pool = createPool();
   try {
     await verifyMigrationSchema(pool);
-    console.log("Verified all 16 Phase 0 tables and migration history table.");
+    console.log("Verified all application tables and migration history table.");
   } finally {
     await pool.end();
   }

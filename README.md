@@ -38,6 +38,17 @@ upstream workspace projects as dependencies are introduced. Workspace compiler
 configs also include local `*.config.ts` files; root tooling uses
 `tsconfig.tools.json`. Run `npm run typecheck && npm test` to verify changes.
 
+Phase 1 API contracts live in `docs/46_OPENAPI_BASELINE.yaml`. Operations marked
+`x-phase: 1` cover the implemented health, CRUD, execution, event and artifact
+routes; unmarked approval and consumer operations describe later phases. The
+`tests/contract/src/phase1.test.ts` Vitest suite checks the complete route
+inventory and compares request and response schemas with that YAML. It also
+validates injected HTTP responses independently, including errors, pagination,
+idempotency and empty responses. Run it with
+`npx vitest run tests/contract/src/phase1.test.ts`, or as part of `npm test`.
+These contract tests use a tenant database fixture; live PostgreSQL RLS checks
+remain in the storage integration suite enabled by `TEST_DATABASE_URL`.
+
 Database migrations live in `infra/migrations/<timestamp>_<name>/`, with an
 `up.sql` and `down.sql` in each directory. The initial migration's `up.sql`
 matches `docs/45_STORAGE_SCHEMA.sql` byte for byte, including its Phase 1 RLS

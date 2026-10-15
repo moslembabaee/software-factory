@@ -5,5 +5,15 @@
     "outDir": "./dist"
   },
   "include": ["src/**/*.ts", "*.config.ts"],
-  "references": [{ "path": "../factory-core" }]
+  "references": [
+    {
+      "path": "../factory-core"
+    },
+    {
+      "path": "../events"
+    },
+    {
+      "path": "../storage"
+    }
+  ]
 }

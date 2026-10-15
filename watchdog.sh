@@ -24,12 +24,19 @@ if ! tmux has-session -t software-factory-orchestrator 2>/dev/null; then
     echo "[$NOW] [WATCHDOG] ✅ Orchestrator revived." >> "$LOG_FILE"
 fi
 
-# 2b. Check if webhook server is alive; if not, restart it
-if ! pgrep -f "python3 webhook_server.py" > /dev/null; then
-    echo "[$NOW] [WATCHDOG] ⚠️ Webhook server NOT FOUND! Reviving in tmux..." >> "$LOG_FILE"
+# 2b. Check if webhook server port is alive; if not, restart it
+if ! ss -tlnp | grep -q ':9097 '; then
+    echo "[$NOW] [WATCHDOG] ⚠️ Webhook server (port 9097) NOT FOUND! Reviving in tmux..." >> "$LOG_FILE"
     tmux kill-session -t software-factory-webhook 2>/dev/null || true
     tmux new-session -d -s software-factory-webhook "cd $PROJECT_DIR && python3 webhook_server.py"
     echo "[$NOW] [WATCHDOG] ✅ Webhook server revived." >> "$LOG_FILE"
+fi
+
+# 2c. Check if SF port (3003) docker-proxy is alive
+if ! ss -tlnp | grep -q ':3003 .*docker-proxy'; then
+    echo "[$NOW] [WATCHDOG] ⚠️ SF port 3003 (docker-proxy) is missing! Restarting container..." >> "$LOG_FILE"
+    docker restart software-factory_web software-factory-postgres-1 2>&1 | head -5 >> "$LOG_FILE"
+    echo "[$NOW] [WATCHDOG] ✅ SF containers restarted to recreate proxy." >> "$LOG_FILE"
 fi
 
 # 3. SELF-REFLECTION & PROGRESS STALENESS CHECK

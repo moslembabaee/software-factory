@@ -359,10 +359,11 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
       );
       expect(events.rows).toEqual([
         { sequence: "0", type: "queue.enqueued" },
-        { sequence: "1", type: "execution.started" },
-        { sequence: "2", type: `execution.${outcome}` },
+        { sequence: "1", type: "execution.dispatched" },
+        { sequence: "2", type: "execution.started" },
+        { sequence: "3", type: `execution.${outcome}` },
       ]);
-      expect((await owner.query("SELECT * FROM outbox")).rowCount).toBe(3);
+      expect((await owner.query("SELECT * FROM outbox")).rowCount).toBe(4);
     },
   );
 
@@ -565,10 +566,14 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
 
   it("rolls the queue migration down and reapplies it", async () => {
     await enqueue();
+    expect(await migrateDown(owner)).toBe("20261015_004_event_delivery");
     expect(await migrateDown(owner)).toBe("20261015_003_work_queue");
     expect(
       (await owner.query("SELECT to_regclass('work_queue') AS name")).rows,
     ).toEqual([{ name: null }]);
-    expect(await migrateUp(owner)).toEqual(["20261015_003_work_queue"]);
+    expect(await migrateUp(owner)).toEqual([
+      "20261015_003_work_queue",
+      "20261015_004_event_delivery",
+    ]);
   });
 });

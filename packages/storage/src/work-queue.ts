@@ -1,4 +1,3 @@
-import type pg from "pg";
 import type {
   AcknowledgeWork,
   DequeueWork,
@@ -8,6 +7,7 @@ import type {
   WorkQueue,
 } from "@software-factory/factory-core";
 import type { TenantDatabase, TenantIdentity } from "./database.js";
+import { appendExecutionEvent as event } from "./append-event.js";
 
 export class QueueConflictError extends Error {
   override readonly name = "QueueConflictError";
@@ -77,36 +77,24 @@ function item(row: QueueRow): QueueItem {
   };
 }
 
-/** Caller holds the execution lock; sequence and outbox commit with its transition. */
-async function event(
-  client: pg.PoolClient,
-  identity: TenantIdentity,
-  executionId: string,
-  type: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  const inserted = await client.query<{ id: string }>(
-    `
-    INSERT INTO events (tenant_id, execution_id, sequence, type, payload)
-    SELECT $1, $2, COALESCE(MAX(sequence), -1) + 1, $3, $4
-    FROM events WHERE tenant_id = $1 AND execution_id = $2 RETURNING id
-  `,
-    [
-      identity.tenantId,
-      executionId,
-      type,
-      JSON.stringify({ ...payload, actor_id: identity.actorId }),
-    ],
-  );
-  const eventId = inserted.rows[0]?.id;
-  if (!eventId) throw new Error("Event insert returned no row");
-  await client.query("INSERT INTO outbox (event_id) VALUES ($1)", [eventId]);
-}
-
 // Every operation uses the same tenant transaction boundary as the Fastify API.
 // The database clock decides expiry, so workers need not synchronize clocks.
 export class PostgresWorkQueue implements WorkQueue {
   constructor(private readonly database: TenantDatabase) {}
+
+  async get(
+    identity: TenantIdentity,
+    executionId: string,
+  ): Promise<QueueItem | null> {
+    identifier(executionId);
+    return this.database.withTenant(identity, async (client) => {
+      const result = await client.query<QueueRow>(
+        "SELECT * FROM work_queue WHERE tenant_id = $1 AND execution_id = $2",
+        [identity.tenantId, executionId],
+      );
+      return result.rows[0] ? item(result.rows[0]) : null;
+    });
+  }
 
   async enqueue(
     identity: TenantIdentity,
@@ -176,6 +164,7 @@ export class PostgresWorkQueue implements WorkQueue {
     input: DequeueWork,
   ): Promise<QueueItem | null> {
     worker(input.workerId);
+    if (input.executionId !== undefined) identifier(input.executionId);
     integer(input.leaseMs, 1, 86_400_000);
     return this.database.withTenant(identity, async (client) => {
       // Lock all participating rows, skipping dispatches held by other workers.
@@ -188,10 +177,11 @@ export class PostgresWorkQueue implements WorkQueue {
           JOIN executions e ON e.tenant_id = q.tenant_id AND e.id = q.execution_id
           JOIN works w ON w.tenant_id = q.tenant_id AND w.id = q.work_id
           WHERE q.tenant_id = $1 AND q.status = 'queued'
+            AND ($2::uuid IS NULL OR q.execution_id = $2)
           ORDER BY q.priority DESC, q.created_at, q.id
           LIMIT 1 FOR UPDATE OF q, e, w SKIP LOCKED
         `,
-          [identity.tenantId],
+          [identity.tenantId, input.executionId ?? null],
         );
         const row = selected.rows[0];
         if (!row) return null;
@@ -254,6 +244,18 @@ export class PostgresWorkQueue implements WorkQueue {
         await client.query(
           "UPDATE works SET state = 'active', version = version + 1 WHERE tenant_id = $1 AND id = $2 AND state = 'open'",
           [identity.tenantId, row.work_id],
+        );
+        await event(
+          client,
+          identity,
+          row.execution_id,
+          "execution.dispatched",
+          {
+            queue_id: row.id,
+            worker_id: input.workerId,
+            fence,
+            expected_version: row.current_version,
+          },
         );
         await event(client, identity, row.execution_id, "execution.started", {
           queue_id: row.id,

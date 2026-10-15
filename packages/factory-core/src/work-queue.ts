@@ -36,6 +36,8 @@ export interface EnqueueWork {
 export interface DequeueWork {
   readonly workerId: string;
   readonly leaseMs: number;
+  /** Event consumers claim only the execution named by their delivery. */
+  readonly executionId?: Execution["id"];
 }
 
 export interface AcknowledgeWork {
@@ -53,6 +55,11 @@ export interface QueueIdentity {
 }
 
 export interface WorkQueue {
+  /** Read durable dispatch status without claiming or locking it. */
+  get(
+    identity: QueueIdentity,
+    executionId: Execution["id"],
+  ): Promise<QueueItem | null>;
   /** One dispatch per Execution; retries return that dispatch without reprioritizing. */
   enqueue(identity: QueueIdentity, input: EnqueueWork): Promise<QueueItem>;
   /** Atomically claims an eligible Execution and activates its Work; null if none. */

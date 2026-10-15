@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@software-factory/factory-core": "*",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "@software-factory/events": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

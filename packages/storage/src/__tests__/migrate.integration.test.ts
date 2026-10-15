@@ -13,6 +13,7 @@ import { verifyMigrationSchema } from "../verify-migrations.js";
 const execute = promisify(execFile);
 const databaseUrl = process.env["TEST_DATABASE_URL"];
 const databaseName = `sf_migrations_${randomBytes(8).toString("hex")}`;
+const deliveryDir = "20261015_004_event_delivery";
 const queueDir = "20261015_003_work_queue";
 const securityDir = "20261015_002_tenant_security";
 const initialDir = "20261015_001_initial_schema";
@@ -142,7 +143,7 @@ describe
       GROUP BY contype ORDER BY contype
     `);
       expect(constraints.rows).toEqual([
-        { type: "c", count: 14, validated: true },
+        { type: "c", count: 15, validated: true },
         { type: "f", count: 26, validated: true },
         { type: "p", count: 17, validated: true },
         { type: "u", count: 15, validated: true },
@@ -174,6 +175,8 @@ describe
       ]);
       expect(await cli("down", true)).toContain("Would roll back");
       expect(await tableNames()).toHaveLength(18);
+      expect(await cli("down")).toContain(`Rolled back: ${deliveryDir}`);
+      expect(await tableNames()).toHaveLength(18);
       expect(await cli("down")).toContain(`Rolled back: ${queueDir}`);
       expect(await tableNames()).toHaveLength(17);
       expect(await cli("down")).toContain(`Rolled back: ${securityDir}`);
@@ -194,6 +197,7 @@ describe
       ).toBe(1);
       expect(await cli("down")).toContain("Nothing to roll back");
       await cli("up");
+      await cli("down");
       await cli("down");
       await cli("down");
       await cli("down");
@@ -292,6 +296,7 @@ describe
           [tenant, execution],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+      expect(await migrateDown(pool)).toBe(deliveryDir);
       expect(await migrateDown(pool)).toBe(queueDir);
       expect(await migrateDown(pool)).toBe(securityDir);
       expect(await migrateDown(pool)).toBe(initialDir);
@@ -301,9 +306,15 @@ describe
 
     it("serializes simultaneous up and down calls without applying SQL twice", async () => {
       const results = await Promise.all([migrateUp(pool), migrateUp(pool)]);
-      expect(results.flat()).toEqual([initialDir, securityDir, queueDir]);
-      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(3);
+      expect(results.flat()).toEqual([
+        initialDir,
+        securityDir,
+        queueDir,
+        deliveryDir,
+      ]);
+      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(4);
       const rolledBack = await Promise.all([
+        migrateDown(pool),
         migrateDown(pool),
         migrateDown(pool),
         migrateDown(pool),
@@ -312,6 +323,7 @@ describe
         initialDir,
         securityDir,
         queueDir,
+        deliveryDir,
       ]);
       expect(await tableNames()).toEqual(["_migrations"]);
     });
@@ -342,6 +354,7 @@ describe
           initialDir,
           securityDir,
           queueDir,
+          deliveryDir,
         ]);
       } finally {
         rmSync(directory, { recursive: true, force: true });

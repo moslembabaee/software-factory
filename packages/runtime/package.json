@@ -11,7 +11,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@software-factory/factory-core": "*"
+    "@software-factory/factory-core": "*",
+    "@software-factory/events": "*",
+    "@software-factory/storage": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

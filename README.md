@@ -96,6 +96,71 @@ role. It checks persistence, cross-tenant reads and mutations, foreign-key
 isolation, optimistic versions, rollback, and identity cleanup while reusing a
 single pooled connection. It creates and removes its own database and role.
 
+### Queue events and sandbox workers
+
+Apply migration `20261015_004_event_delivery` with `npm run migrate:up` before
+starting event workers. `createQueueRuntime` from `@software-factory/runtime`
+connects the API's persisted `execution.created` event to queue admission, then
+connects `queue.enqueued` to a fenced sandbox dispatch. Embed it in a worker
+process with a trusted tenant identity, an RLS-enforcing `TenantDatabase`, a
+configured `DockerSandbox`, and a trusted source resolver:
+
+```ts
+const worker = createQueueRuntime({
+  identity,
+  database,
+  sandbox,
+  workerId: "sandbox-worker-1",
+  leaseMs: 60_000,
+  resolveProgram: async (execution) => programs.load(execution.id),
+});
+await worker.runOnce(); // Call again from the worker's polling loop.
+```
+
+Each call expires lost execution leases and delivers a bounded batch of pending
+outbox events (default 100 attempts, including failed deliveries). Outbox claims
+commit before invoking consumers; sandbox execution never holds an open database
+transaction. Deliveries are
+ordered per execution, retried at least once, and fenced by expiring tokens.
+Consumers registered with `worker.bus.subscribe` must make their effects
+idempotent. Sandbox dispatch deduplicates through the durable queue: concurrent
+or repeated deliveries cannot claim an execution twice. Lock contention keeps
+the wakeup pending. After a worker crashes with a claimed execution, lease
+expiry moves it to reconciliation rather than executing its code again.
+Consumer failures leave that execution's events pending while the batch continues
+with unrelated executions. `runOnce` reports failures after the batch; the polling
+loop should catch and log them before its next attempt.
+
+The history records queued, dispatched, running, and failed or verifying phases.
+A successful sandbox enters `verifying`. A separate trusted verifier calls
+`worker.history.finishVerification` with the expected version, the
+`execution.verifying` event ID, a persisted evidence artifact ID, and its
+`completed` or `failed` verdict. Completion requires valid consumed approvals
+where approvals exist. This method records the verifier's decision; the caller
+must perform the independent checks and produce the evidence. State, event and
+outbox writes commit together. `worker.history.list` returns Event primitives;
+`replayExecution` from `@software-factory/events` rebuilds their lifecycle phase
+and rejects history gaps or invalid transitions. Dispatch is a history phase;
+the authoritative Execution state vocabulary is unchanged.
+
+Use a dedicated worker login with `NOSUPERUSER NOBYPASSRLS` and these grants
+after migration (configure login credentials separately):
+
+```sql
+GRANT CONNECT ON DATABASE software_factory TO sf_worker;
+GRANT USAGE ON SCHEMA public TO sf_worker;
+GRANT SELECT, UPDATE ON works, executions TO sf_worker;
+GRANT SELECT, INSERT ON events TO sf_worker;
+GRANT SELECT, INSERT, UPDATE ON outbox, work_queue TO sf_worker;
+GRANT SELECT, INSERT, DELETE ON worker_leases TO sf_worker;
+GRANT SELECT ON artifacts, approvals TO sf_worker;
+```
+
+The worker never accepts its tenant identity or source trust classification from
+event payloads. Existing sandbox isolation requirements still apply. Set
+`TEST_DATABASE_URL` to run the disposable PostgreSQL event wiring suite, including
+concurrent delivery, restart recovery, tenant isolation and transactional rollback.
+
 Database migrations live in `infra/migrations/<timestamp>_<name>/`, with an
 `up.sql` and `down.sql` in each directory. The initial migration's `up.sql`
 matches `docs/45_STORAGE_SCHEMA.sql` byte for byte, including its Phase 1 RLS

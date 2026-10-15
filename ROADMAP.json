@@ -131,7 +131,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 15,
-      "completed_at": "2026-10-15T17:25:05.349980+00:00"
+      "completed_at": "2026-10-15T17:25:05.349980+00:00",
+      "closed_at": "2026-10-15T17:25:08Z"
     },
     {
       "id": "T-002",
@@ -178,7 +179,7 @@
       "title": "Sandbox execution environment for untrusted code",
       "description": "Create sandboxed worker process isolation (namespace/container-level) for executing user-submitted code. Implement stdout/stderr capture, timeout enforcement, and resource limits. Wire into the Execution primitive.",
       "assigned_agent": "claude",
-      "status": "approved",
+      "status": "in_progress",
       "retry_count": 0,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 19
@@ -189,10 +190,11 @@
       "title": "Event system wiring: queue events to sandbox dispatch",
       "description": "Connect Work queue events to the sandbox executor via the Event primitive. Implement event sourcing for execution lifecycle (queued -> dispatched -> running -> completed/failed).",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 20
+      "github_issue_number": 20,
+      "completed_at": "2026-10-15T21:25:01.398929+00:00"
     },
     {
       "id": "T-007",

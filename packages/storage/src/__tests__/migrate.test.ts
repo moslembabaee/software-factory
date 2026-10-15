@@ -25,6 +25,9 @@ import {
 import { verifyMigrationSchema } from "../verify-migrations.js";
 
 const initialDir = "20261015_001_initial_schema";
+const deliveryDir = "20261015_004_event_delivery";
+const deliverySql = readMigrationSql(join(MIGRATIONS_DIR, deliveryDir), "up");
+const deliveryChecksum = createHash("sha256").update(deliverySql).digest("hex");
 const queueDir = "20261015_003_work_queue";
 const queueSql = readMigrationSql(join(MIGRATIONS_DIR, queueDir), "up");
 const queueChecksum = createHash("sha256").update(queueSql).digest("hex");
@@ -130,6 +133,7 @@ describe("canonical initial migration", () => {
       initialDir,
       securityDir,
       queueDir,
+      deliveryDir,
     ]);
   });
 });
@@ -157,8 +161,12 @@ describe("migration discovery", () => {
     const migrations = scanMigrations();
     expect(computeMigrationState(migrations, []).pending).toEqual(migrations);
     expect(
-      computeMigrationState(migrations, [initialDir, securityDir, queueDir])
-        .pending,
+      computeMigrationState(migrations, [
+        initialDir,
+        securityDir,
+        queueDir,
+        deliveryDir,
+      ]).pending,
     ).toEqual([]);
   });
 });
@@ -170,6 +178,7 @@ describe("transactional runner", () => {
       initialDir,
       securityDir,
       queueDir,
+      deliveryDir,
     ]);
     const statements = db.statements();
     expect(statements[0]).toBe("BEGIN");
@@ -189,6 +198,7 @@ describe("transactional runner", () => {
       { dir: initialDir, checksum: initialChecksum },
       { dir: securityDir, checksum: securityChecksum },
       { dir: queueDir, checksum: queueChecksum },
+      { dir: deliveryDir, checksum: deliveryChecksum },
     ]);
     expect(await migrateUp(db.pool)).toEqual([]);
     expect(db.statements()).not.toContain(upSql);
@@ -256,6 +266,7 @@ describe("transactional runner", () => {
       initialDir,
       securityDir,
       queueDir,
+      deliveryDir,
     ]);
     expect(up.statements()).not.toContain(upSql);
     expect(up.statements().at(-1)).toBe("ROLLBACK");

@@ -1,10 +1,18 @@
 import { z } from "zod";
 import { counterSchema, idSchema, timestampSchema } from "./shared.js";
 
-// The normative v1 event vocabulary in docs/33_API_EVENTS_AND_STORAGE_CONTRACTS.md.
+// The v1 vocabulary plus durable API, queue and verification lifecycle facts.
 export const EventTypeSchema = z.enum([
+  "execution.created",
   "execution.queued",
+  "execution.dispatched",
   "execution.started",
+  "execution.verifying",
+  "execution.awaiting_approval",
+  "execution.cancellation_requested",
+  "queue.enqueued",
+  "queue.cancelled",
+  "queue.timed_out",
   "agent.step.started",
   "agent.tool.requested",
   "agent.tool.completed",

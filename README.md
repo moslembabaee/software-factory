@@ -8,3 +8,9 @@ Full scope retained. Start with docs/00_START_HERE.md and docs/48_DETERMINISTIC_
 
 
 Version 6.5 adds release evidence gates, immutable version-binding rules, concurrency policy and negative security/consumer test matrix. The ZIP contains specifications, not working application code.
+
+For the TypeScript workspaces, `tsconfig.json` defines the shared strict compiler
+options and references every app and package. Each workspace extends it and
+includes its own source files. The root is a solution config with no source files;
+`npx tsc --noEmit` checks that config, while `npm run typecheck` checks the source
+in every workspace. Run `npm run typecheck && npm test` to verify changes.

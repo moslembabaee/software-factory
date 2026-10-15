@@ -24,12 +24,13 @@
       "title": "Issue #2 (Part 2/3): Root and per-package tsconfig with strict mode",
       "description": "Create root `tsconfig.json` with `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, `moduleResolution: 'bundler'`, `target: 'ES2022'`, and `composite: true`. Create a per-package `tsconfig.json` in each of apps/api, apps/workbench, and all packages/ subdirs that extends the root tsconfig. AC: `npx tsc --noEmit` passes; root tsconfig references all packages; each child tsconfig has `extends: '../../tsconfig.json'` (or adjusted depth).\n\nParent Issue: #2\nReference: Closes #2",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 2,
       "subtask_index": 2,
-      "total_subtasks": 3
+      "total_subtasks": 3,
+      "completed_at": "2026-10-15T11:21:59.780442+00:00"
     },
     {
       "id": "T-ISSUE-2-3",

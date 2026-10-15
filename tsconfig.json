@@ -1,4 +1,37 @@
 {
-  "extends": "./tsconfig.base.json",
-  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts"]
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    "composite": true,
+
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  },
+  "files": [],
+  "references": [
+    { "path": "apps/api" },
+    { "path": "apps/workbench" },
+    { "path": "packages/events" },
+    { "path": "packages/factory-core" },
+    { "path": "packages/flow" },
+    { "path": "packages/runtime" },
+    { "path": "packages/storage" }
+  ]
 }

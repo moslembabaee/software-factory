@@ -15,5 +15,8 @@
     "build": "npm run typecheck",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   }
 }

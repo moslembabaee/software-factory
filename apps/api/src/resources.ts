@@ -6,6 +6,8 @@ import { ApiError } from "./errors.js";
 import { idempotent, registerExecutionRoutes } from "./core.js";
 import { createWorkBody, errorResponses, executionSchema, idempotencyHeaders, idParams, responseSchema, uuid, wireResource, workSchema } from "./schemas.js";
 import { registerAskRoutes } from "./ask.js";
+import { registerBuildRoutes } from "./build.js";
+import type { BuildRoadmap } from "./build-roadmap.js";
 import type { AskRoadmap } from "./ask-roadmap.js";
 
 const id = z.uuid();
@@ -83,6 +85,7 @@ export function registerResources(
   database: TenantDatabase,
   authenticate: Authenticate,
   askRoadmap: AskRoadmap,
+  buildRoadmap: BuildRoadmap,
 ): void {
   app.decorateRequest("identity", null);
   app.addHook("onRequest", async (request) => {
@@ -110,6 +113,7 @@ export function registerResources(
   }
 
   registerAskRoutes(app, scoped, askRoadmap);
+  registerBuildRoutes(app, scoped, buildRoadmap);
 
   function registerReads(name: string, table: string): void {
     const itemSchema = resourceSchemas[name];

@@ -22,7 +22,10 @@ interface Parameter {
   schema: Schema;
 }
 interface Response {
-  content?: { "application/json": { schema: Schema } };
+  content?: {
+    "application/json": { schema: Schema };
+    "text/event-stream"?: { schema: Schema };
+  };
 }
 export interface Operation {
   operationId: string;
@@ -78,7 +81,11 @@ export const baseline = resolve(source) as OpenApi;
 export const operations = Object.entries(baseline.paths).flatMap(
   ([path, methods]) =>
     Object.entries(methods)
-      .filter(([, operation]) => [1, 3, 4].includes(operation["x-phase"] ?? 0))
+      .filter(
+        ([, operation]) =>
+          [1, 3, 4].includes(operation["x-phase"] ?? 0) &&
+          !operation.responses["200"]?.content?.["text/event-stream"],
+      )
       .map(([method, operation]) => ({
         path,
         method: method.toUpperCase() as "GET" | "POST" | "PATCH" | "DELETE",

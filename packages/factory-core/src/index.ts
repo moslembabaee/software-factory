@@ -43,3 +43,5 @@ export { RelationSchema } from "./primitives/relation.js";
 export type { Relation } from "./primitives/relation.js";
 export { IntakeSchema, TaskProposalSchema, AskPlanSchema, PendingTaskSchema, AskAcceptanceSchema, proposeTasks } from "./intake.js";
 export type { TaskProposal, AskPlan, PendingTask, AskAcceptance } from "./intake.js";
+export { BuildStatusSchema, BuildTaskSchema, BuildLogSchema, BuildSnapshotSchema, BuildApprovalSchema, canApproveTask } from "./build.js";
+export type { BuildTask, BuildLog, BuildSnapshot } from "./build.js";

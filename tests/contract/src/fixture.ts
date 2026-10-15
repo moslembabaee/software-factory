@@ -48,6 +48,7 @@ const rows: Record<string, Record<string, unknown>> = {
   relations: { kind: "depends_on", from_ref: resourceId, to_ref: actorId },
 };
 export const payloads: Record<string, Record<string, unknown>> = {
+  approveBuildTask: { revision: "a".repeat(64) },
   previewAskPlan: { description: "Build a dashboard" },
   acceptAskPlan: { description: "Build a dashboard", accepted: true },
   createProject: { name: "Project" },
@@ -67,7 +68,7 @@ export const payloads: Record<string, Record<string, unknown>> = {
 export function request(endpoint: Endpoint) {
   return {
     method: endpoint.method,
-    url: endpoint.url.replace("{id}", resourceId),
+    url: endpoint.url.replace("{id}", resourceId).replace("{taskId}", "T-1"),
     headers,
     ...(payloads[endpoint.operation.operationId]
       ? { payload: payloads[endpoint.operation.operationId] }
@@ -147,6 +148,12 @@ export async function fixture(authenticated = true) {
   await writeFile(roadmapPath, JSON.stringify({ tasks: [] }));
   const app: FastifyInstance = buildApp({
     database,
+    buildRoadmap: {
+      snapshot: () =>
+        Promise.resolve({ tasks: [], current_task_id: null, logs: [] }),
+      approve: () =>
+        Promise.resolve({ tasks: [], current_task_id: null, logs: [] }),
+    },
     askRoadmap: new FileAskRoadmap(roadmapPath),
     ...(authenticated ? { authenticate: () => ({ tenantId, actorId }) } : {}),
   });
@@ -155,7 +162,8 @@ export async function fixture(authenticated = true) {
   );
   const routes = new Map<string, FastifySchema>();
   app.addHook("onRoute", (route) => {
-    if (route.method === "HEAD") return;
+    // SSE transport is exercised with streaming injection in build.test.ts; this suite validates JSON.
+    if (route.method === "HEAD" || route.url.endsWith("/build/stream")) return;
     routes.set(
       `${String(route.method)} ${route.url.replace(/:([^/]+)/g, "{$1}")}`,
       route.schema ?? {},

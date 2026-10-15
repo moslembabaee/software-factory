@@ -233,7 +233,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 23,
-      "completed_at": "2026-10-15T22:04:47.996506+00:00"
+      "completed_at": "2026-10-15T22:04:47.996506+00:00",
+      "closed_at": "2026-10-15T22:04:51Z"
     },
     {
       "id": "T-010",
@@ -241,10 +242,11 @@
       "title": "Build dashboard: live task progress, logs, and approval workflow",
       "description": "Build the Build UI dashboard showing real-time task status, streaming logs from orchestrator/webhook, and approval buttons for pending tasks. Integrate with GitHub issue lifecycle.",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 24
+      "github_issue_number": 24,
+      "completed_at": "2026-10-15T22:20:26.159113+00:00"
     },
     {
       "id": "T-EVOLVE-1792061687-1",

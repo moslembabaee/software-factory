@@ -37,7 +37,8 @@ def save_roadmap(path: Path, snapshot: dict):
         receipts = {**snapshot.get("ask_intakes", {}), **latest.get("ask_intakes", {})}
         incoming = {task["id"]: task for task in snapshot.get("tasks", [])}
         for task in latest.get("tasks", []):
-            if task.get("closed_at") or task["id"] not in incoming:
+            if (task.get("closed_at") or task["id"] not in incoming or
+                    task.get("build_approval") != incoming[task["id"]].get("build_approval")):
                 incoming[task["id"]] = task
         latest.update(snapshot)
         latest["tasks"] = list(incoming.values())

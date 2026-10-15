@@ -9,11 +9,14 @@ import { registerResources, type Authenticate } from "./resources.js";
 import { responseSchema } from "./schemas.js";
 import { FileAskRoadmap, type AskRoadmap } from "./ask-roadmap.js";
 
+import { FileBuildRoadmap, type BuildRoadmap } from "./build-roadmap.js";
+
 export interface AppOptions {
   database?: TenantDatabase;
   /** Must verify credentials and resolve tenant/actor on the server. */
   authenticate?: Authenticate;
   askRoadmap?: AskRoadmap;
+  buildRoadmap?: BuildRoadmap;
 }
 
 export function buildApp(options: AppOptions = {}): FastifyInstance {
@@ -77,7 +80,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   }));
 
   app.register((api, _options, done) => {
-    registerResources(api, database, options.authenticate ?? (() => null), options.askRoadmap ?? new FileAskRoadmap());
+    registerResources(api, database, options.authenticate ?? (() => null), options.askRoadmap ?? new FileAskRoadmap(), options.buildRoadmap ?? new FileBuildRoadmap());
     done();
   }, { prefix: "/api/v1" });
 

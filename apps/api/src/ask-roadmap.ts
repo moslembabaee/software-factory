@@ -21,7 +21,7 @@ export interface AskRoadmap {
   ): Promise<PendingTask[]>;
 }
 
-function repositoryRoadmap(): string {
+export function repositoryRoadmap(): string {
   let directory = dirname(fileURLToPath(import.meta.url));
   while (!existsSync(join(directory, "roadmap_store.py"))) {
     const parent = dirname(directory);

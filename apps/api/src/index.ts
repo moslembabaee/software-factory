@@ -10,3 +10,6 @@ export type { Authenticate } from "./resources.js";
 
 /** Placeholder entry point for the API scaffold. */
 export function noop(): void {}
+
+export { FileBuildRoadmap } from "./build-roadmap.js";
+export type { BuildRoadmap } from "./build-roadmap.js";

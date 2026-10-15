@@ -70,7 +70,7 @@ describe("Implemented OpenAPI route inventory", () => {
       expect(
         context.app.hasRoute({
           method: endpoint.method,
-          url: endpoint.url.replace("{id}", ":id"),
+          url: endpoint.url.replace("{id}", ":id").replace("{taskId}", ":taskId"),
         }),
       ).toBe(true);
     }

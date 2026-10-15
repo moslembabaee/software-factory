@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { AskInterface } from "./AskInterface.js";
+import { Workbench } from "./Workbench.js";
 import "./styles.css";
 
 const element = document.getElementById("root");
@@ -8,7 +8,7 @@ const params = new URLSearchParams(window.location.search);
 const projectId = params.get("project") ?? "";
 createRoot(element).render(
   projectId ? (
-    <AskInterface projectId={projectId} />
+    <Workbench projectId={projectId} initialMode={params.get("mode") === "build" ? "build" : "ask"} />
   ) : (
     <main className="ask-workspace">
       <h1>Software Factory</h1>

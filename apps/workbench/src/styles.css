@@ -166,3 +166,69 @@ code {
     margin: 0;
   }
 }
+.workspace-nav {
+  display: flex;
+  gap: 12px;
+  max-width: 920px;
+  margin: 24px auto 0;
+  padding: 0 28px;
+}
+.workspace-nav button[aria-pressed="false"] {
+  background: #dce5f5;
+  color: #203c7d;
+}
+.build-tasks {
+  list-style: none;
+  padding: 0;
+}
+.build-task {
+  border-top: 1px solid #dae2ec;
+  padding: 20px 0;
+}
+.task-status {
+  border-radius: 20px;
+  padding: 4px 10px;
+  background: #edf2f8;
+  text-transform: capitalize;
+}
+.status-completed {
+  background: #e4f5ed;
+  color: #216142;
+}
+.status-failed {
+  background: #fff0ed;
+  color: #932d24;
+}
+.status-in_progress {
+  background: #e0e9ff;
+  color: #2747a9;
+}
+.build-progress progress {
+  width: 100%;
+  accent-color: #294ebc;
+  height: 20px;
+}
+.build-logs {
+  max-height: 420px;
+  overflow: auto;
+  background: #142337;
+  color: #dbe9fb;
+  padding: 16px;
+  border-radius: 10px;
+  font:
+    0.8rem/1.5 ui-monospace,
+    monospace;
+}
+.build-logs p {
+  white-space: pre-wrap;
+}
+.build-logs time {
+  color: #a9bed9;
+}
+@media (max-width: 600px) {
+  .build-task .plan-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
+  }
+}

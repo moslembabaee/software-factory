@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import build_events
 import roadmap_sync
 import roadmap_store
 from issue_lifecycle import IGNORED_LABELS, label_names, mark_issue_closed, task_matches_issue
@@ -32,6 +33,13 @@ def trigger_issue_bot():
     except Exception as e:
         log(f"Error triggering issue_bot: {e}")
 
+def log_issue_tasks(issue_num: int, message: str):
+    data = json.loads(ROADMAP_FILE.read_text(encoding="utf-8"))
+    for task in data.get("tasks", []):
+        if task_matches_issue(task, issue_num):
+            build_events.emit(PROJECT_ROOT, task["id"], "webhook", message)
+
+
 def handle_issue_closed(issue_num: int, closed_at: str | None = None):
     if not isinstance(issue_num, int) or issue_num <= 0:
         return
@@ -39,6 +47,7 @@ def handle_issue_closed(issue_num: int, closed_at: str | None = None):
         if ROADMAP_FILE.exists() and roadmap_store.update_roadmap(
             ROADMAP_FILE, lambda data: mark_issue_closed(data, issue_num, closed_at)
         ):
+            log_issue_tasks(issue_num, f"GitHub issue #{issue_num} closed")
             roadmap_sync.sync_roadmap_to_github()
             log(f"Synchronized roadmap for closed Issue #{issue_num}")
     except Exception as e:
@@ -71,6 +80,7 @@ def mark_task_approved(issue_num: int):
     try:
         if not ROADMAP_FILE.exists() or not roadmap_store.update_roadmap(ROADMAP_FILE, approve):
             return False
+        log_issue_tasks(issue_num, f"GitHub issue #{issue_num} approved")
         roadmap_sync.sync_roadmap_to_github()
         subprocess.run(
             ["gh", "issue", "edit", str(issue_num), "--repo", "moslembabaee/software-factory",

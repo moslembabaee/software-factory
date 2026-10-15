@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
+import build_events
 import roadmap_store
 import roadmap_sync
 from issue_lifecycle import (
@@ -64,13 +65,15 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def log(config: RuntimeConfig, message: str) -> None:
+def log(config: RuntimeConfig, message: str, task_id: str | None = None) -> None:
     directory = config.project_root / "logs"
     directory.mkdir(exist_ok=True)
     line = f"[{timestamp()}] {message}"
     print(line, flush=True)
     with (directory / "orchestrator.log").open("a", encoding="utf-8") as output:
         output.write(line + "\n")
+    if task_id:
+        build_events.emit(config.project_root, task_id, "orchestrator", message)
 
 
 def run_cmd(
@@ -271,14 +274,14 @@ class AgentRuntime:
         for agent in agent_order(task.get("assigned_agent", "claude")):
             if not self.update(task_id, lambda _task, _data: None):
                 return "cancelled"
-            log(self.config, f"Dispatching {task_id} to {agent}")
+            log(self.config, f"Dispatching {task_id} to {agent}", task_id)
             code, output = execute_agent_task(agent, build_prompt(task, self.config, feedback), self.config)
             failure = "quota" if quota_error(output) else ("agent" if code else None)
             verify_code = None
             if not self.update(task_id, lambda _task, _data: None):
                 return "cancelled"
             if failure is None:
-                log(self.config, f"Verifying {task_id}: {verification}")
+                log(self.config, f"Verifying {task_id}: {verification}", task_id)
                 verify_code, output = run_cmd(
                     verification, self.config.verification_timeout, self.config.project_root,
                 )
@@ -296,18 +299,18 @@ class AgentRuntime:
                 return "cancelled"
             if failure:
                 feedback = f"{agent}: {failure}\n{output[-4000:]}"
-                log(self.config, f"{task_id}: {agent} failed ({failure}); advancing failover chain")
+                log(self.config, f"{task_id}: {agent} failed ({failure}); advancing failover chain", task_id)
                 continue
             success, detail = self.publish(task)
             if not success:
                 self.finish(task_id, "failed", last_error=detail, publication_error=detail)
-                log(self.config, f"{task_id}: {detail}")
+                log(self.config, f"{task_id}: {detail}", task_id)
                 return "failed"
             if not self.finish(task_id, "completed", completed_at=timestamp(),
                                completed_agent=agent, commit_sha=detail, last_error=None,
                                publication_error=None):
                 return "cancelled"
-            log(self.config, f"Completed and pushed {task_id} at {detail}")
+            log(self.config, f"Completed and pushed {task_id} at {detail}", task_id)
             return "completed"
         self.finish(task_id, "failed")
         return "failed"
@@ -329,7 +332,7 @@ class AgentRuntime:
                 return self.execute(task)
             except Exception as error:
                 self.finish(task["id"], "failed", last_error=f"Runtime error: {error}")
-                log(self.config, f"{task['id']}: runtime error: {error}")
+                log(self.config, f"{task['id']}: runtime error: {error}", task["id"])
                 return "failed"
             finally:
                 # Only render local markdown; this never posts GitHub messages.

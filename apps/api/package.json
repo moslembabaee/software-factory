@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@software-factory/factory-core": "*",
     "@software-factory/storage": "*",
     "fastify": "^5.0.0",
     "pg": "^8.23.1",

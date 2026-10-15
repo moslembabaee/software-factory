@@ -1,4 +1,8 @@
 import type { FastifyInstance, FastifySchema } from "fastify";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileAskRoadmap } from "../../../apps/api/src/ask-roadmap.js";
 import type pg from "pg";
 import { vi } from "vitest";
 import type { TenantDatabase } from "@software-factory/storage";
@@ -44,6 +48,8 @@ const rows: Record<string, Record<string, unknown>> = {
   relations: { kind: "depends_on", from_ref: resourceId, to_ref: actorId },
 };
 export const payloads: Record<string, Record<string, unknown>> = {
+  previewAskPlan: { description: "Build a dashboard" },
+  acceptAskPlan: { description: "Build a dashboard", accepted: true },
   createProject: { name: "Project" },
   updateProject: { name: "Updated" },
   createWork: { project_id: resourceId, objective: "Build it" },
@@ -136,10 +142,17 @@ export async function fixture(authenticated = true) {
       operation({ query } as unknown as pg.PoolClient),
   };
   const withTenant = vi.spyOn(database, "withTenant");
+  const directory = await mkdtemp(join(tmpdir(), "sf-contract-"));
+  const roadmapPath = join(directory, "ROADMAP.json");
+  await writeFile(roadmapPath, JSON.stringify({ tasks: [] }));
   const app: FastifyInstance = buildApp({
     database,
+    askRoadmap: new FileAskRoadmap(roadmapPath),
     ...(authenticated ? { authenticate: () => ({ tenantId, actorId }) } : {}),
   });
+  app.addHook("onClose", async () =>
+    rm(directory, { recursive: true, force: true }),
+  );
   const routes = new Map<string, FastifySchema>();
   app.addHook("onRoute", (route) => {
     if (route.method === "HEAD") return;

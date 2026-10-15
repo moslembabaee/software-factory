@@ -2,7 +2,10 @@
   "extends": "../../packages/tsconfig/base.json",
   "compilerOptions": {
     "rootDir": ".",
-    "outDir": "./dist"
+    "outDir": "./dist",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "*.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "*.config.ts"],
+  "references": [{ "path": "../../packages/factory-core" }]
 }

@@ -220,7 +220,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 22,
-      "completed_at": "2026-10-15T21:49:31.155493+00:00"
+      "completed_at": "2026-10-15T21:49:31.155493+00:00",
+      "closed_at": "2026-10-15T21:49:34Z"
     },
     {
       "id": "T-009",
@@ -228,10 +229,11 @@
       "title": "Ask interface: natural-language intake and task generation",
       "description": "Build the Ask UI (React/TypeScript) where users describe what they want in natural language. Parse into structured tasks with phases, agents, and verification gates. Write to ROADMAP.json as pending tasks.",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 23
+      "github_issue_number": 23,
+      "completed_at": "2026-10-15T22:04:47.996506+00:00"
     },
     {
       "id": "T-010",

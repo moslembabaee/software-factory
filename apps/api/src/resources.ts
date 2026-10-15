@@ -5,6 +5,8 @@ import type { TenantDatabase, TenantIdentity } from "@software-factory/storage";
 import { ApiError } from "./errors.js";
 import { idempotent, registerExecutionRoutes } from "./core.js";
 import { createWorkBody, errorResponses, executionSchema, idempotencyHeaders, idParams, responseSchema, uuid, wireResource, workSchema } from "./schemas.js";
+import { registerAskRoutes } from "./ask.js";
+import type { AskRoadmap } from "./ask-roadmap.js";
 
 const id = z.uuid();
 const text = z.string().trim().min(1).max(10_000).regex(/\S/);
@@ -80,6 +82,7 @@ export function registerResources(
   app: FastifyInstance,
   database: TenantDatabase,
   authenticate: Authenticate,
+  askRoadmap: AskRoadmap,
 ): void {
   app.decorateRequest("identity", null);
   app.addHook("onRequest", async (request) => {
@@ -105,6 +108,8 @@ export function registerResources(
       return operation(client, identity);
     });
   }
+
+  registerAskRoutes(app, scoped, askRoadmap);
 
   function registerReads(name: string, table: string): void {
     const itemSchema = resourceSchemas[name];

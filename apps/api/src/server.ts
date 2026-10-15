@@ -7,11 +7,13 @@ import { createApplicationPool, PostgresDatabase, type TenantDatabase } from "@s
 import { ApiError } from "./errors.js";
 import { registerResources, type Authenticate } from "./resources.js";
 import { responseSchema } from "./schemas.js";
+import { FileAskRoadmap, type AskRoadmap } from "./ask-roadmap.js";
 
 export interface AppOptions {
   database?: TenantDatabase;
   /** Must verify credentials and resolve tenant/actor on the server. */
   authenticate?: Authenticate;
+  askRoadmap?: AskRoadmap;
 }
 
 export function buildApp(options: AppOptions = {}): FastifyInstance {
@@ -75,7 +77,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   }));
 
   app.register((api, _options, done) => {
-    registerResources(api, database, options.authenticate ?? (() => null));
+    registerResources(api, database, options.authenticate ?? (() => null), options.askRoadmap ?? new FileAskRoadmap());
     done();
   }, { prefix: "/api/v1" });
 

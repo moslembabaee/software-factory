@@ -32,12 +32,17 @@ def update_roadmap(path: Path, update) -> bool:
 
 def save_roadmap(path: Path, snapshot: dict):
     def merge(latest):
+        # Intake receipts are immutable. Preserve concurrent acceptances even
+        # when an orchestrator saves a snapshot taken before the Ask write.
+        receipts = {**snapshot.get("ask_intakes", {}), **latest.get("ask_intakes", {})}
         incoming = {task["id"]: task for task in snapshot.get("tasks", [])}
         for task in latest.get("tasks", []):
             if task.get("closed_at") or task["id"] not in incoming:
                 incoming[task["id"]] = task
         latest.update(snapshot)
         latest["tasks"] = list(incoming.values())
+        if receipts:
+            latest["ask_intakes"] = receipts
         if any(task.get("closed_at") and task["id"] == latest.get("current_task_id")
                for task in latest["tasks"]):
             latest["current_task_id"] = None

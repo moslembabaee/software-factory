@@ -8,7 +8,11 @@ export type QueueOutcome = Extract<
   "verifying" | "awaiting_approval" | "failed"
 >;
 
-/** A durable dispatch of one Execution. Higher priorities are served first. */
+/**
+ * A durable dispatch of one Execution. Higher priorities are served first, then
+ * creation order. A dispatch moves queued -> leased -> acknowledged | timed_out;
+ * stale or ineligible dispatches become cancelled. Terminal dispatches are retained.
+ */
 export interface QueueItem {
   readonly id: string;
   readonly tenantId: Work["tenantId"];
@@ -49,11 +53,18 @@ export interface QueueIdentity {
 }
 
 export interface WorkQueue {
+  /** One dispatch per Execution; retries return that dispatch without reprioritizing. */
   enqueue(identity: QueueIdentity, input: EnqueueWork): Promise<QueueItem>;
+  /** Atomically claims an eligible Execution and activates its Work; null if none. */
   dequeue(
     identity: QueueIdentity,
     input: DequeueWork,
   ): Promise<QueueItem | null>;
+  /** Requires a live lease, matching worker/fence/version, and a running Execution. */
   ack(identity: QueueIdentity, input: AcknowledgeWork): Promise<QueueItem>;
+  /**
+   * Expires at most limit leases (default 100). Running Executions enter
+   * needs_reconciliation; uncertain effects are never automatically replayed.
+   */
   timeout(identity: QueueIdentity, limit?: number): Promise<QueueItem[]>;
 }

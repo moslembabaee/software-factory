@@ -88,16 +88,20 @@ migrations and `migrate:down` rolls back the last applied migration. Add
 `-- --dry` to preview either command without retaining database changes. The
 Node.js runner uses `pg`, a transaction and an advisory lock, and records
 checksums in `_migrations` to reject changed or missing applied migrations.
+`migrate:verify` checks that every tenant table has RLS enabled and forced,
+with a tenant isolation policy covering reads and writes, including the outbox
+and work queue.
 Rollback drops the sixteen domain tables in reverse dependency order, along
 with their constraints and indexes. It preserves `_migrations` and the shared
 `pgcrypto` extension. Add a new timestamp directory for future schema changes
 rather than editing an applied migration.
 
 Set `TEST_DATABASE_URL` to a PostgreSQL 16+ connection to enable the live
-migration tests during `npm test`. Its role must be able to create databases;
-the tests create and delete a disposable database and exercise both npm
-commands, constraints, concurrency, and rollback. Without this variable, the
-live tests are skipped.
+storage tests during `npm test`. Use the development/CI database administrator;
+the tests create and delete disposable databases and roles. They exercise both
+npm migration commands, constraints, concurrency, rollback, and tenant isolation
+on all 17 tenant tables, including access as a table owner and pooled connection
+reuse. Without this variable, the live tests are skipped.
 
 Run `npm run db:seed` after `migrate:up` to create a development tenant. The seed
 uses a fixed tenant ID and preserves existing rows when repeated.

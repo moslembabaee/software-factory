@@ -282,17 +282,52 @@ describe("transactional runner", () => {
 describe("migration schema verification", () => {
   const expectedTables = ["_migrations", ...tables, "work_queue"];
 
-  function schema(names: string[]) {
+  function schema(names: string[], insecure?: string, field = "rls_enabled") {
     return {
-      query: vi.fn().mockResolvedValue({
-        rows: names.map((tablename) => ({ tablename })),
-      }),
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: names.map((tablename) => ({ tablename })),
+        })
+        .mockResolvedValue({
+          rows: names.map((tablename) => ({
+            tablename,
+            rls_enabled: true,
+            rls_forced: true,
+            tenant_policy: true,
+            ...(tablename === insecure ? { [field]: false } : {}),
+          })),
+        }),
     } as unknown as pg.Pool;
   }
 
   it("accepts the complete schema", async () => {
     await expect(
       verifyMigrationSchema(schema(expectedTables)),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(expectedTables.filter((name) => name !== "_migrations"))(
+    "rejects disabled RLS on %s",
+    async (name) => {
+      await expect(
+        verifyMigrationSchema(schema(expectedTables, name)),
+      ).rejects.toThrow(`tenant RLS missing or incomplete: ${name}`);
+    },
+  );
+
+  it.each(["rls_forced", "tenant_policy"])(
+    "rejects missing %s even when row security is enabled",
+    async (field) => {
+      await expect(
+        verifyMigrationSchema(schema(expectedTables, "projects", field)),
+      ).rejects.toThrow("tenant RLS missing or incomplete: projects");
+    },
+  );
+
+  it("does not require RLS on migration history", async () => {
+    await expect(
+      verifyMigrationSchema(schema(expectedTables, "_migrations")),
     ).resolves.toBeUndefined();
   });
 

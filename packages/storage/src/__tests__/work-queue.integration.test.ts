@@ -2,7 +2,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { PostgresDatabase, type TenantIdentity } from "../database.js";
+import {
+  PostgresDatabase,
+  type TenantDatabase,
+  type TenantIdentity,
+} from "../database.js";
 import { migrateDown, migrateUp } from "../migrate.js";
 import { PostgresWorkQueue, QueueConflictError } from "../work-queue.js";
 
@@ -188,6 +192,43 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
     ).toBe(1);
   });
 
+  it("holds the Work eligibility lock until enqueue commits", async () => {
+    const executionId = await execution();
+    const editor = await owner.connect();
+    try {
+      await editor.query("BEGIN");
+      await editor.query("SET LOCAL lock_timeout = '100ms'");
+      const holdingDatabase: TenantDatabase = {
+        withTenant: (tenant, operation) =>
+          database.withTenant(tenant, async (client) => {
+            const result = await operation(client);
+            // This update must wait until the queue's transaction commits. Foreign
+            // key KEY SHARE locks alone do not protect the Work's mutable state.
+            await expect(
+              editor.query(
+                "UPDATE works SET state = 'paused' WHERE tenant_id = $1",
+                [identity.tenantId],
+              ),
+            ).rejects.toMatchObject({ code: "55P03" });
+            return result;
+          }),
+      };
+      const guardedQueue = new PostgresWorkQueue(holdingDatabase);
+      expect(
+        await guardedQueue.enqueue(identity, {
+          executionId,
+          expectedVersion: 0,
+        }),
+      ).toMatchObject({ status: "queued" });
+    } finally {
+      await editor.query("ROLLBACK");
+      editor.release();
+    }
+    expect((await queue.dequeue(identity, claim))?.executionId).toBe(
+      executionId,
+    );
+  });
+
   it("never delivers one dispatch to two concurrent consumers", async () => {
     const queued = await Promise.all(
       Array.from({ length: 8 }, () => enqueue()),
@@ -217,6 +258,68 @@ describe.skipIf(!databaseUrl).sequential("PostgreSQL work queue", () => {
       client.release();
     }
     expect((await queue.dequeue(identity, claim))?.id).toBe(locked.id);
+  });
+
+  it("skips locked dispatches and Works as well as locked executions", async () => {
+    for (const table of ["work_queue", "works"]) {
+      const locked = await enqueue(10);
+      const available = await enqueue(0);
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`SELECT id FROM ${table} WHERE id = $1 FOR UPDATE`, [
+          table === "works" ? locked.workId : locked.id,
+        ]);
+        expect((await queue.dequeue(identity, claim))?.id).toBe(available.id);
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
+      expect((await queue.dequeue(identity, claim))?.id).toBe(locked.id);
+    }
+  });
+
+  it("drains stale dispatch versions and continues to the next eligible item", async () => {
+    const stale = await enqueue(10);
+    const available = await enqueue();
+    await owner.query(
+      "UPDATE executions SET version = version + 1 WHERE id = $1",
+      [stale.executionId],
+    );
+    expect((await queue.dequeue(identity, claim))?.id).toBe(available.id);
+    expect(
+      (
+        await owner.query("SELECT status FROM work_queue WHERE id = $1", [
+          stale.id,
+        ])
+      ).rows,
+    ).toEqual([{ status: "cancelled" }]);
+    expect(
+      (
+        await owner.query(
+          "SELECT state, version FROM executions WHERE id = $1",
+          [stale.executionId],
+        )
+      ).rows,
+    ).toEqual([{ state: "queued", version: "1" }]);
+    expect(
+      (
+        await owner.query(
+          "SELECT * FROM worker_leases WHERE execution_id = $1",
+          [stale.executionId],
+        )
+      ).rowCount,
+    ).toBe(0);
+    expect(
+      (
+        await owner.query(
+          "SELECT payload FROM events WHERE execution_id = $1 AND type = 'queue.cancelled'",
+          [stale.executionId],
+        )
+      ).rows,
+    ).toMatchObject([
+      { payload: { expected_version: "0", observed_version: "1" } },
+    ]);
   });
 
   it.each(["verifying", "awaiting_approval", "failed"] as const)(

@@ -126,7 +126,7 @@ export class PostgresWorkQueue implements WorkQueue {
         `
         SELECT e.work_id, e.state, e.version, w.state AS work_state
         FROM executions e JOIN works w ON w.tenant_id = e.tenant_id AND w.id = e.work_id
-        WHERE e.tenant_id = $1 AND e.id = $2 FOR UPDATE OF e
+        WHERE e.tenant_id = $1 AND e.id = $2 FOR UPDATE OF e, w
       `,
         [identity.tenantId, input.executionId],
       );
@@ -179,7 +179,7 @@ export class PostgresWorkQueue implements WorkQueue {
     integer(input.leaseMs, 1, 86_400_000);
     return this.database.withTenant(identity, async (client) => {
       // Lock all participating rows, skipping dispatches held by other workers.
-      // Cancelled executions are drained without ever handing them to a worker.
+      // Ineligible or stale dispatches are drained without handing them to a worker.
       for (;;) {
         const selected = await client.query<Candidate>(
           `
@@ -197,6 +197,7 @@ export class PostgresWorkQueue implements WorkQueue {
         if (!row) return null;
         if (
           row.execution_state !== "queued" ||
+          row.current_version !== row.execution_version ||
           !["open", "active"].includes(row.work_state)
         ) {
           await client.query(
@@ -205,6 +206,10 @@ export class PostgresWorkQueue implements WorkQueue {
           );
           await event(client, identity, row.execution_id, "queue.cancelled", {
             queue_id: row.id,
+            expected_version: row.execution_version,
+            observed_version: row.current_version,
+            execution_state: row.execution_state,
+            work_state: row.work_state,
           });
           continue;
         }

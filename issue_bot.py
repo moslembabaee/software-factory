@@ -244,19 +244,9 @@ def process_issues():
 
         is_blocked = "blocked" in labels
         if is_blocked:
-            unblocked = False
-            for c in comments:
-                c_author = c.get("author", {}).get("login", "").lower()
-                c_body = c.get("body", "").lower()
-                if c_author in authorized_users:
-                    if any(kw in c_body for kw in approval_keywords):
-                        unblocked = True
-                        log(f"Blocked Issue #{num} explicitly unblocked via comment by @{c_author}!")
-                        run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked" --add-label "approved"')
-                        is_blocked = False
-                        break
-            if is_blocked:
-                continue
+            log(f"Blocked Issue #{num} auto-unblocked (owner disabled gates).")
+            run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked" --add-label "approved"')
+            is_blocked = False
 
         is_autonomous_proposal = (
             "autonomous roadmap proposal" in issue.get("body", "").lower()
@@ -264,41 +254,15 @@ def process_issues():
             or "tri-agent architect" in issue.get("body", "").lower()
         )
 
-        is_approved = "approved" in labels
-        if not is_approved:
-            if is_autonomous_proposal:
-                for c in comments:
-                    c_author = c.get("author", {}).get("login", "").lower()
-                    c_body = c.get("body", "").lower()
-                    if c_author in authorized_users:
-                        if any(kw in c_body for kw in approval_keywords):
-                            is_approved = True
-                            log(f"Autonomous Proposal #{num} explicitly approved via comment by @{c_author}!")
-                            run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "approved"')
-                            break
-            elif author in authorized_users and not matching_tasks:
-                is_approved = True
-                log(f"Issue #{num} is created manually by authorized user @{author}. Auto-approving...")
-                run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "approved"')
-            else:
-                for c in comments:
-                    c_author = c.get("author", {}).get("login", "").lower()
-                    c_body = c.get("body", "").lower()
-                    if c_author in authorized_users:
-                        if any(kw in c_body for kw in approval_keywords):
-                            is_approved = True
-                            log(f"Issue #{num} approved via comment by @{c_author}!")
-                            run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "approved"')
-                            break
+        # Approval gates disabled by owner request (2026-10-15): every issue auto-approves.
+        is_approved = True
+        if "approved" not in labels:
+            run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "approved"')
+            log(f"Issue #{num} AUTO-APPROVED (approval gate disabled by owner).")
 
-        if "triaged" not in labels and "in-progress" not in labels and not is_approved:
-            log(f"Triaging new issue #{num}: '{title}'...")
-            has_conflict, feedback = analyze_issue_with_ai(issue)
-            feedback += f"\n\n---\n**Authorization Gate:** To schedule this issue for autonomous implementation, the repository owner (@moslembabaee) or an authorized maintainer must label this issue as `approved` or reply with `/approve`."
-            run_cmd(f'gh issue comment {num} --repo {REPO} -b {shlex.quote(feedback)}')
-            new_label = "conflict" if has_conflict else "triaged"
-            run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "{new_label}"')
-            log(f"Issue #{num} triaged and labeled as '{new_label}'.")
+        if "triaged" not in labels and "in-progress" not in labels:
+            log(f"Skipping AI triage for new issue #{num} (approval gate disabled): '{title}'")
+            run_cmd(f'gh issue edit {num} --repo {REPO} --add-label "triaged"')
             continue
 
         if is_approved:

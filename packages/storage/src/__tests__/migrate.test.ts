@@ -22,6 +22,7 @@ import {
   readMigrationSql,
   scanMigrations,
 } from "../migrate.js";
+import { verifyMigrationSchema } from "../verify-migrations.js";
 
 const initialDir = "20261015_001_initial_schema";
 const initialPath = join(MIGRATIONS_DIR, initialDir);
@@ -252,6 +253,47 @@ describe("transactional runner", () => {
     const changed = database([{ dir: initialDir, checksum: "changed" }]);
     await expect(migrateDown(changed.pool)).rejects.toThrow("has changed");
     expect(changed.statements().at(-1)).toBe("ROLLBACK");
+  });
+});
+
+describe("migration schema verification", () => {
+  const expectedTables = ["_migrations", ...tables];
+
+  function schema(names: string[]) {
+    return {
+      query: vi.fn().mockResolvedValue({
+        rows: names.map((tablename) => ({ tablename })),
+      }),
+    } as unknown as pg.Pool;
+  }
+
+  it("accepts the complete schema", async () => {
+    await expect(
+      verifyMigrationSchema(schema(expectedTables)),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(expectedTables)("rejects a schema missing %s", async (missing) => {
+    await expect(
+      verifyMigrationSchema(
+        schema(expectedTables.filter((name) => name !== missing)),
+      ),
+    ).rejects.toThrow(`missing tables: ${missing}`);
+  });
+
+  it("rejects an empty database", async () => {
+    await expect(verifyMigrationSchema(schema([]))).rejects.toThrow(
+      "missing tables",
+    );
+  });
+
+  it("propagates database failures", async () => {
+    const pool = {
+      query: vi.fn().mockRejectedValue(new Error("database unavailable")),
+    } as unknown as pg.Pool;
+    await expect(verifyMigrationSchema(pool)).rejects.toThrow(
+      "database unavailable",
+    );
   });
 });
 

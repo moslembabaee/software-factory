@@ -21,6 +21,7 @@
     "format:check": "prettier --check .",
     "migrate:up": "node --import tsx packages/storage/src/migrate.ts up",
     "migrate:down": "node --import tsx packages/storage/src/migrate.ts down",
+    "migrate:verify": "node --import tsx packages/storage/src/verify-migrations.ts",
     "test": "vitest run && node --test tests/tooling/*.test.mjs"
   },
   "devDependencies": {

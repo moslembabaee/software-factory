@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { migrateDown, migrateUp, PROJECT_ROOT } from "../migrate.js";
+import { verifyMigrationSchema } from "../verify-migrations.js";
 
 const execute = promisify(execFile);
 const databaseUrl = process.env["TEST_DATABASE_URL"];
@@ -101,12 +102,27 @@ describe
     }
 
     it("runs both npm scripts on a fresh database, preserves every constraint, and reapplies", async () => {
+      await expect(verifyMigrationSchema(pool)).rejects.toThrow(
+        "missing tables",
+      );
       expect(await cli("up", true)).toContain("Would apply");
       expect(await tableNames()).toEqual([]);
       expect(await cli("up")).toContain(`Applied: ${initialDir}`);
       expect(await tableNames()).toEqual(
         ["_migrations", ...tenantTables].sort(),
       );
+      await verifyMigrationSchema(pool);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query('DROP TABLE "relations"');
+        await expect(verifyMigrationSchema(client)).rejects.toThrow(
+          "missing tables: relations",
+        );
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
       expect(await cli("up")).toContain("No pending migrations");
       const extension = await pool.query(
         "SELECT 1 FROM pg_extension WHERE extname = 'pgcrypto'",
@@ -157,6 +173,9 @@ describe
       expect(await tableNames()).toHaveLength(17);
       expect(await cli("down")).toContain(`Rolled back: ${initialDir}`);
       expect(await tableNames()).toEqual(["_migrations"]);
+      await expect(verifyMigrationSchema(pool)).rejects.toThrow(
+        "missing tables",
+      );
       expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(0);
       // Preserve the shared extension even when it predates the next up/down cycle.
       expect(

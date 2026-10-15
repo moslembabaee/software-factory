@@ -50,6 +50,7 @@ Start PostgreSQL 16 with `docker compose up -d --wait postgres`, then run:
 ```sh
 export DATABASE_URL=postgres://sf:sf_dev_pw@127.0.0.1:5432/software_factory
 npm run migrate:up
+npm run migrate:verify
 npm run migrate:down
 ```
 
@@ -68,5 +69,20 @@ Set `TEST_DATABASE_URL` to a PostgreSQL 16+ connection to enable the live
 migration tests during `npm test`. Its role must be able to create databases;
 the tests create and delete a disposable database and exercise both npm
 commands, constraints, concurrency, and rollback. Without this variable, the
-live tests are skipped. `.github/workflows/migrations.yml` supplies PostgreSQL
-16 and this variable in CI.
+live tests are skipped.
+
+`.github/workflows/ci.yml` runs on pushes to every branch and pull requests to
+`main`, skipping changes confined to `docs/**`. It installs Node LTS and locked
+npm dependencies with an npm cache, then runs strict ESLint, the complete
+TypeScript project build, and unit tests. It starts PostgreSQL 16 through the
+development Compose configuration, runs `migrate:up`, checks all sixteen domain
+tables and `_migrations` with `migrate:verify`, and runs `migrate:down`. The live
+migration suite then checks constraints, concurrency, failure recovery, and
+rollback against a disposable database. Logs are printed on failure and Compose
+volumes are removed on exit. The validation job has a nine-minute timeout.
+
+`.github/workflows/ci-notify.yml` comments on the PR or commit with the failed
+run's log link, including when CI times out. It uses a separate `workflow_run`
+notification so fork PRs can receive comments without granting write access to
+the code under test. This notification workflow must be on the default branch
+to receive events; it never checks out PR code or downloads run artifacts.

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["docs/**"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["docs/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint, typecheck, test, and migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DATABASE_URL: postgres://sf:sf_dev_pw@127.0.0.1:5432/software_factory
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node LTS and npm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck all packages
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Start PostgreSQL 16 with Compose
+        run: docker compose up -d --wait --wait-timeout 90 postgres
+      - name: Verify migrations and roll back
+        run: npm run migrate:up && npm run migrate:verify && npm run migrate:down
+      - name: Live migration tests
+        env:
+          TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: npx vitest run packages/storage/src/__tests__/migrate.integration.test.ts
+      - name: Database logs on failure
+        if: failure()
+        run: docker compose logs --no-color postgres
+      - name: Clean up database
+        if: always()
+        run: docker compose down --volumes --remove-orphans

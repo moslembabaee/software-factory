@@ -68,7 +68,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 5,
-      "completed_at": "2026-10-15T12:05:06.679124+00:00"
+      "completed_at": "2026-10-15T12:05:06.679124+00:00",
+      "closed_at": "2026-10-15T12:05:10Z"
     },
     {
       "id": "T-ISSUE-7",
@@ -76,10 +77,11 @@
       "title": "Issue #7: CI pipeline: lint, typecheck, test, and migration verify",
       "description": "## Description\nSet up GitHub Actions CI pipeline for Phase 0 that runs on every push to any branch (except docs-only changes). Must validate every project deliverable before green.\n\n## Pipeline stages\n1. **Setup**: Checkout, Node LTS, npm/pnpm install, cache restore\n2. **Lint**: ESLint with TypeScript strict rules\n3. **Typecheck**: `tsc --noEmit` or `tsc --build` across all packages\n4. **Unit tests**: `vitest` run (placeholder passing test)\n5. **Docker**: Build and start PostgreSQL 16 via compose\n6. **Migration verify**: Run migrations against the composed DB, verify all tables exist, then rollback\n7. **Notify**: On failure, comment on the PR/commit\n\n## Acceptance Criteria\n- [ ] `.github/workflows/ci.yml` exists with the stages above\n- [ ] Pipeline triggers on push to any branch and on PRs to `main`\n- [ ] Pipeline skips docs-only changes (paths filter: `docs/**`)\n- [ ] Pipeline runs and all stages pass on the current `main`\n- [ ] Migration verify stage runs `npm run migrate:up && npm run migrate:down`\n- [ ] Job timeout under 10 minutes for basic run\n\nReference: Closes #7",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 7
+      "github_issue_number": 7,
+      "completed_at": "2026-10-15T12:15:27.802355+00:00"
     },
     {
       "id": "T-ISSUE-8",

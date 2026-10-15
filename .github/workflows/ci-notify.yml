@@ -1,0 +1,49 @@
+name: CI failure notification
+
+# Run trusted notification code after CI, including CI for fork pull requests.
+# Never check out or execute code or artifacts from the triggering run here.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: ${{ contains(fromJSON('["failure", "timed_out"]'), github.event.workflow_run.conclusion) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Comment on the pull request or commit
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const body = `CI failed for ${run.head_sha.slice(0, 7)}. [View the run and logs](${run.html_url}).`;
+            let pullRequests = run.pull_requests ?? [];
+            // GitHub can omit pull_requests for fork runs. Resolve them via the API.
+            if (run.event === 'pull_request' && pullRequests.length === 0) {
+              pullRequests = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+                ...context.repo,
+                commit_sha: run.head_sha,
+              });
+            }
+            if (pullRequests.length > 0) {
+              for (const pr of pullRequests) {
+                await github.rest.issues.createComment({
+                  ...context.repo,
+                  issue_number: pr.number,
+                  body,
+                });
+              }
+            } else {
+              await github.rest.repos.createCommitComment({
+                ...context.repo,
+                commit_sha: run.head_sha,
+                body,
+              });
+            }

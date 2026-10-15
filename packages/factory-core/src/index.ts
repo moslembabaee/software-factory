@@ -9,9 +9,18 @@
 export type { DomainPrimitive } from "./domain-primitive.js";
 export type { ValueObject } from "./value-object.js";
 
-export type { Work, WorkState } from "./work.js";
-export type { Actor, ActorKind } from "./actor.js";
-export type { Execution, ExecutionState } from "./execution.js";
-export type { Event } from "./event.js";
-export type { Reference } from "./reference.js";
-export type { Relation } from "./relation.js";
+export { WorkSchema, WorkStateSchema } from "./primitives/work.js";
+export type { Work, WorkState } from "./primitives/work.js";
+export { ActorSchema, ActorKindSchema } from "./primitives/actor.js";
+export type { Actor, ActorKind } from "./primitives/actor.js";
+export {
+  ExecutionSchema,
+  ExecutionStateSchema,
+} from "./primitives/execution.js";
+export type { Execution, ExecutionState } from "./primitives/execution.js";
+export { EventSchema, EventTypeSchema } from "./primitives/event.js";
+export type { Event, EventType } from "./primitives/event.js";
+export { ReferenceSchema } from "./primitives/reference.js";
+export type { Reference } from "./primitives/reference.js";
+export { RelationSchema } from "./primitives/relation.js";
+export type { Relation } from "./primitives/relation.js";

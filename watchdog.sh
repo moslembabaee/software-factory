@@ -17,7 +17,7 @@ if [ "$FREE_MEM" -lt 350 ]; then
 fi
 
 # 2. Check if orchestrator is alive; if not, restart it
-if ! pgrep -f "python3 orchestrator.py" > /dev/null; then
+if ! tmux has-session -t software-factory-orchestrator 2>/dev/null; then
     echo "[$NOW] [WATCHDOG] ⚠️ Orchestrator process NOT FOUND! Reviving in tmux..." >> "$LOG_FILE"
     tmux kill-session -t software-factory-orchestrator 2>/dev/null || true
     tmux new-session -d -s software-factory-orchestrator "cd $PROJECT_DIR && python3 orchestrator.py"

@@ -96,6 +96,48 @@ role. It checks persistence, cross-tenant reads and mutations, foreign-key
 isolation, optimistic versions, rollback, and identity cleanup while reusing a
 single pooled connection. It creates and removes its own database and role.
 
+### Repository agent runtime
+
+`python3 orchestrator.py` runs the trusted repository automation loop used by
+`watchdog.sh`. It requires Python 3.10+, Git, the authenticated `claude`, `codex`
+and `agy` CLIs, and the project's Node/npm installation on `PATH`. GitHub-linked
+tasks also require authenticated `gh` access. Use a dedicated checkout with an
+`origin` remote and Git author identity configured: successful runs stage all
+checkout changes and push to `main` without force.
+
+Run `python3 orchestrator.py --once` to process at most one approved task, or use
+`--project-root`, `--repo`, `--remote` and `--branch` to target another checkout.
+The defaults resolve paths relative to the script and use
+`moslembabaee/software-factory`. Each task must contain `id`, `title`,
+`description`, `status` and a nonempty trusted `verification_cmd`; the Software
+Factory gate is `npm run typecheck && npm test`. Commands run from the checkout.
+
+Only `approved` tasks are claimed. Waiting tasks remain pending approval, an
+empty queue idles, and `STOP_IMPROVEMENTS` prevents further dispatch. One process
+holds the repository lock during each task. The agent chain is Claude → Codex →
+Antigravity, rotated to start with `assigned_agent`. Each provider gets one
+attempt. Missing CLIs, timeouts, nonzero exits, explicit quota errors (including
+Antigravity's `AGY_ERROR` with exit code zero), and failed verification advance
+to the next provider with bounded failure feedback. A provider quota requires
+that provider's quota to reset; it does not require an implementation repair.
+
+After an agent succeeds, the independent verification gate must pass before
+Git staging, commit and push. Any Git failure stops publication and leaves the
+task failed; push rejection preserves the local commit. Completion and its
+`commit_sha` are recorded in the local roadmap only after push succeeds, so this
+final bookkeeping is saved after the implementation checkpoint. This checkout's
+roadmap is the live scheduler state. `attempts`, failure tails and retry counts
+are persisted after each attempt using the shared atomic roadmap store, while
+concurrent edits and issue closures are preserved. The runtime writes local
+`ROADMAP.md` and `logs/orchestrator.log`. It does not automatically reclaim a
+stale `current_task_id` after a crash; inspect that task before approving it again
+and clearing the pointer.
+
+This worker is separate from the tenant-facing Fastify API and PostgreSQL/RLS
+sandbox dispatch below. Its prompts and shell verification commands are trusted
+repository configuration. The regression suite runs through `npm test`, mocks
+providers, and uses disposable local Git repositories without external pushes.
+
 ### Queue events and sandbox workers
 
 Apply migration `20261015_004_event_delivery` with `npm run migrate:up` before

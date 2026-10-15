@@ -1,0 +1,407 @@
+"""Runtime regressions. Providers are mocked; verification and Git run locally."""
+
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+import orchestrator as runtime
+import roadmap_store
+
+
+class RuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="sf-runtime-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "checkout"
+        self.repo.mkdir()
+        self.remote = self.root / "remote.git"
+        self.config = runtime.RuntimeConfig(project_root=self.repo, git_timeout=10)
+        self.worker = runtime.AgentRuntime(self.config)
+        self.task = {
+            "id": "T-007", "title": 'Runtime "quotes" $(touch injected)',
+            "phase": "Phase 3: Agent Runtime", "description": "Implement runtime",
+            "assigned_agent": "claude", "status": "approved", "retry_count": 0,
+            "verification_cmd": f'{sys.executable} -c "print(\'verified\')"',
+            "custom_field": {"preserve": True},
+        }
+        self.write({"tasks": [self.task], "current_task_id": None, "metadata": {"keep": 1}})
+        (self.repo / ".gitignore").write_text("logs/\nROADMAP.json.lock\n")
+        self.git("init", "--quiet", "-b", "main")
+        self.git("config", "user.name", "Runtime test")
+        self.git("config", "user.email", "runtime@example.com")
+        self.git("add", "--all")
+        self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "initial")
+        subprocess.run(["git", "init", "--quiet", "--bare", str(self.remote)], check=True)
+        self.git("remote", "add", "origin", str(self.remote))
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.repo, stderr=subprocess.STDOUT).decode().strip()
+
+    def write(self, data):
+        self.config.roadmap_file.write_text(json.dumps(data))
+
+    def data(self):
+        return self.worker.load()
+
+    def latest(self):
+        return self.data()["tasks"][0]
+
+    def set_task(self, **fields):
+        data = self.data()
+        data["tasks"][0].update(fields)
+        self.write(data)
+
+    def test_success_runs_real_verification_commits_and_pushes_before_completion(self):
+        original = runtime.run_cmd
+
+        def observe(command, *args):
+            if isinstance(command, list) and command[:2] == ["git", "push"]:
+                self.assertEqual(self.latest()["status"], "in_progress")
+                self.assertNotIn("completed_at", self.latest())
+            return original(command, *args)
+
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")) as agent, \
+                patch.object(runtime, "run_cmd", side_effect=observe):
+            self.assertEqual(self.worker.run_once(), "completed")
+        agent.assert_called_once()
+        task = self.latest()
+        self.assertEqual(task["status"], "completed")
+        self.assertIsNone(self.data()["current_task_id"])
+        self.assertEqual(task["completed_agent"], "claude")
+        self.assertEqual(task["retry_count"], 0)
+        self.assertEqual(task["attempts"][0]["verification_exit_code"], 0)
+        self.assertEqual(task["custom_field"], {"preserve": True})
+        self.assertEqual(self.data()["metadata"], {"keep": 1})
+        self.assertEqual(self.git("log", "-1", "--format=%s"), f"feat(runtime): T-007 {task['title']}")
+        remote_sha = subprocess.check_output(
+            ["git", "--git-dir", str(self.remote), "rev-parse", "refs/heads/main"], text=True,
+        ).strip()
+        self.assertEqual(task["commit_sha"], remote_sha)
+        self.assertFalse((self.repo / "injected").exists())
+        self.assertTrue((self.repo / "ROADMAP.md").exists())
+        self.assertEqual(self.worker.run_once(), "idle")
+
+    def test_reported_antigravity_quota_fails_over_even_with_zero_exit(self):
+        self.set_task(assigned_agent="antigravity")
+        error = ('error: Individual quota reached. Resets in 87h47m21s.\n'
+                 'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429}')
+        with patch.object(runtime, "execute_agent_task", side_effect=[(0, error), (0, "done")]) as agent:
+            self.assertEqual(self.worker.run_once(), "completed")
+        self.assertEqual([call.args[0] for call in agent.call_args_list], ["antigravity", "claude"])
+        self.assertIn(error, agent.call_args_list[1].args[1])
+        attempts = self.latest()["attempts"]
+        self.assertEqual(attempts[0]["failure"], "quota")
+        self.assertIsNone(attempts[0]["verification_exit_code"])
+        self.assertEqual(self.latest()["retry_count"], 1)
+
+    def test_provider_errors_skip_verification_and_exhaust_chain_once(self):
+        with patch.object(runtime, "execute_agent_task", return_value=(429, "quota")) as agent, \
+                patch.object(runtime, "run_cmd") as command:
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertEqual([call.args[0] for call in agent.call_args_list], list(runtime.AGENT_CHAIN))
+        command.assert_not_called()
+        self.assertEqual(self.latest()["retry_count"], 3)
+        self.assertEqual(len(self.latest()["attempts"]), 3)
+        self.assertIsNone(self.data()["current_task_id"])
+        self.assertEqual(self.worker.run_once(), "idle")
+        self.assertNotIn("completed_at", self.latest())
+
+    def test_verification_failure_is_passed_to_next_agent(self):
+        marker = self.repo / "ready"
+        self.set_task(verification_cmd=f"test -f {marker}")
+        calls = []
+
+        def agent(name, prompt, _config):
+            calls.append((name, prompt))
+            if name == "codex":
+                marker.write_text("ready")
+            return 0, "done"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent):
+            self.assertEqual(self.worker.run_once(), "completed")
+        self.assertEqual([call[0] for call in calls], ["claude", "codex"])
+        self.assertIn("verification", calls[1][1])
+        self.assertEqual(self.latest()["attempts"][0]["verification_exit_code"], 1)
+        self.assertEqual(self.latest()["completed_agent"], "codex")
+
+    def test_verification_timeout_fails_over(self):
+        self.config = runtime.RuntimeConfig(project_root=self.repo, verification_timeout=0.05)
+        self.worker = runtime.AgentRuntime(self.config)
+        self.set_task(verification_cmd=f'{sys.executable} -c "import time; time.sleep(10)"')
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")):
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertEqual(self.latest()["retry_count"], 3)
+        self.assertTrue(all(a["verification_exit_code"] == -1 for a in self.latest()["attempts"]))
+
+    def test_missing_or_blank_verification_never_dispatches(self):
+        for value in (None, "", "  "):
+            with self.subTest(value=value):
+                self.set_task(status="approved", verification_cmd=value)
+                with patch.object(runtime, "execute_agent_task") as agent:
+                    self.assertEqual(self.worker.run_once(), "failed")
+                agent.assert_not_called()
+                self.assertIn("Missing verification_cmd", self.latest()["last_error"])
+
+    def test_only_approved_tasks_are_dispatched(self):
+        for status in ("waiting_approval", "pending_approval", "pending", "failed", "completed", "in_progress"):
+            with self.subTest(status=status):
+                self.set_task(status=status)
+                before = self.data()
+                with patch.object(runtime, "execute_agent_task") as agent:
+                    self.assertEqual(self.worker.run_once(), "idle")
+                agent.assert_not_called()
+                self.assertEqual(before, self.data())
+
+    def test_existing_current_task_and_stop_flag_prevent_dispatch(self):
+        data = self.data()
+        data["current_task_id"] = "another-task"
+        self.write(data)
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "idle")
+            (self.repo / "STOP_IMPROVEMENTS").touch()
+            self.assertEqual(self.worker.run_once(), "stopped")
+        agent.assert_not_called()
+        self.assertEqual(self.latest()["status"], "approved")
+
+    def test_repository_lock_prevents_concurrent_workers(self):
+        directory = self.repo / "logs"
+        directory.mkdir()
+        with (directory / "orchestrator.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.worker.run_once(), "busy")
+        self.assertEqual(self.latest()["status"], "approved")
+
+    def test_concurrent_issue_close_is_never_overwritten_or_pushed(self):
+        def agent(_name, _prompt, _config):
+            def close(data):
+                data["tasks"][0].update(status="completed", closed_at="external-close")
+                data["current_task_id"] = None
+                return True
+            roadmap_store.update_roadmap(self.config.roadmap_file, close)
+            return 0, "done"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent), \
+                patch.object(runtime, "run_cmd") as command:
+            self.assertEqual(self.worker.run_once(), "cancelled")
+        command.assert_not_called()
+        self.assertEqual(self.latest()["closed_at"], "external-close")
+        self.assertNotIn("commit_sha", self.latest())
+
+    def test_external_cancellation_during_verification_prevents_publish(self):
+        def verify(*_args):
+            data = self.data()
+            data["tasks"][0]["status"] = "waiting_approval"
+            data["current_task_id"] = None
+            self.write(data)
+            return 0, "verified"
+
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")), \
+                patch.object(runtime, "run_cmd", side_effect=verify) as command:
+            self.assertEqual(self.worker.run_once(), "cancelled")
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(self.latest()["status"], "waiting_approval")
+
+    def test_concurrent_roadmap_additions_survive_attempt_updates(self):
+        def agent(_name, _prompt, _config):
+            data = self.data()
+            data["metadata"]["concurrent"] = True
+            data["tasks"].append({"id": "new-task", "status": "waiting_approval"})
+            self.write(data)
+            return 1, "unavailable"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent):
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertTrue(self.data()["metadata"]["concurrent"])
+        self.assertEqual(self.data()["tasks"][1]["id"], "new-task")
+        self.assertEqual(len(self.latest()["attempts"]), 3)
+
+    def test_commit_failure_never_pushes_or_completes(self):
+        hook = self.repo / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        original = runtime.run_cmd
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")), \
+                patch.object(runtime, "run_cmd", wraps=original) as command:
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertFalse(any(c.args[0][:2] == ["git", "push"] for c in command.call_args_list))
+        self.assertIn("commit", self.latest()["publication_error"])
+        self.assertNotIn("completed_at", self.latest())
+        self.assertEqual(self.git("rev-list", "--count", "HEAD"), "1")
+
+    def test_push_rejection_preserves_commit_and_fails_task(self):
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")) as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+        agent.assert_called_once()
+        self.assertIn("git push failed", self.latest()["publication_error"])
+        self.assertEqual(self.latest()["status"], "failed")
+        self.assertNotIn("completed_at", self.latest())
+        self.assertIsNone(self.data()["current_task_id"])
+        self.assertEqual(self.git("rev-list", "--count", "HEAD"), "2")
+
+    def test_staging_failure_prevents_commit(self):
+        original = runtime.run_cmd
+
+        def command(argv, *args):
+            if isinstance(argv, list) and argv[:2] == ["git", "add"]:
+                return 1, "index.lock exists"
+            return original(argv, *args)
+
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")), \
+                patch.object(runtime, "run_cmd", side_effect=command):
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertIn("index.lock", self.latest()["last_error"])
+        self.assertEqual(self.git("rev-list", "--count", "HEAD"), "1")
+
+    def test_closed_and_excluded_issues_cannot_dispatch(self):
+        self.set_task(github_issue_number=21)
+        responses = [
+            {"state": "CLOSED", "labels": [], "closedAt": "closed"},
+            {"state": "OPEN", "labels": [{"name": "manual"}], "closedAt": None},
+        ]
+        for issue in responses:
+            with self.subTest(issue=issue):
+                self.set_task(status="approved", closed_at=None)
+                with patch.object(runtime, "run_cmd", return_value=(0, json.dumps(issue))), \
+                        patch.object(runtime, "execute_agent_task") as agent:
+                    self.assertEqual(self.worker.run_once(), "idle")
+                agent.assert_not_called()
+        self.assertEqual(self.latest()["status"], "approved")
+
+    def test_issue_api_failure_defers_without_claiming(self):
+        self.set_task(github_issue_number=21)
+        for code, output in [(1, "offline"), (0, "invalid JSON"), (0, "{}")]:
+            with patch.object(runtime, "run_cmd", return_value=(code, output)), \
+                    patch.object(runtime, "execute_agent_task") as agent:
+                self.assertEqual(self.worker.run_once(), "idle")
+            agent.assert_not_called()
+        self.assertEqual(self.latest()["status"], "approved")
+
+    def test_once_cli_exits_on_idle_without_dispatching(self):
+        self.set_task(status="waiting_approval")
+        process = subprocess.run(
+            [sys.executable, str(runtime.PROJECT_ROOT / "orchestrator.py"),
+             "--once", "--project-root", str(self.repo)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
+        )
+        self.assertEqual(process.returncode, 0, process.stdout)
+        self.assertEqual(self.latest()["status"], "waiting_approval")
+
+    def test_sigterm_stops_active_agent_process_group(self):
+        binary = self.root / "bin"
+        binary.mkdir()
+        marker = self.root / "agent-pid"
+        agent = binary / "claude"
+        agent.write_text(
+            f"#!{sys.executable}\nimport os,time\n"
+            f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n"
+        )
+        agent.chmod(0o755)
+        process = subprocess.Popen(
+            [sys.executable, str(runtime.PROJECT_ROOT / "orchestrator.py"),
+             "--once", "--project-root", str(self.repo)],
+            env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(marker.exists(), "CLI never dispatched the test agent")
+            process.terminate()
+            self.assertEqual(process.wait(timeout=5), 0)
+            pid = int(marker.read_text())
+            stat = Path(f"/proc/{pid}/stat")
+            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+            self.assertEqual(self.latest()["status"], "in_progress")
+            self.assertNotIn("commit_sha", self.latest())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if marker.exists():
+                try:
+                    os.killpg(int(marker.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_runtime_exception_fails_without_stuck_current_task(self):
+        with patch.object(runtime, "execute_agent_task", side_effect=OSError("provider missing")):
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertIn("provider missing", self.latest()["last_error"])
+        self.assertIsNone(self.data()["current_task_id"])
+
+
+class TransportTests(unittest.TestCase):
+    def test_chain_rotation_and_unknown_assignment(self):
+        self.assertEqual(runtime.agent_order("claude"), ("claude", "codex", "antigravity"))
+        self.assertEqual(runtime.agent_order("codex"), ("codex", "antigravity", "claude"))
+        self.assertEqual(runtime.agent_order("antigravity"), ("antigravity", "claude", "codex"))
+        self.assertEqual(runtime.agent_order("unknown"), runtime.AGENT_CHAIN)
+
+    def test_agent_commands_use_argv_and_configured_directory(self):
+        config = runtime.RuntimeConfig(project_root=Path("/tmp/example"), agent_timeout=12)
+        prompt = 'literal "$(touch bad)"; keep as one argument'
+        for agent, executable in [("claude", "env"), ("codex", "codex"), ("antigravity", "agy")]:
+            with self.subTest(agent=agent), patch.object(runtime, "run_cmd", return_value=(0, "done")) as command:
+                self.assertEqual(runtime.execute_agent_task(agent, prompt, config), (0, "done"))
+                argv, timeout, cwd = command.call_args.args
+                self.assertEqual(argv[0], executable)
+                self.assertIn(prompt, argv)
+                self.assertEqual((timeout, cwd), (12, config.project_root))
+
+    def test_missing_cli_is_an_agent_failure(self):
+        code, output = runtime.run_cmd(["/nonexistent/software-factory-agent"])
+        self.assertEqual(code, -2)
+        self.assertIn("No such file", output)
+
+    def test_output_capture_returns_bounded_tail(self):
+        code, output = runtime.run_cmd([
+            sys.executable, "-c", "import sys; sys.stdout.write('x' * 100000 + 'END')",
+        ])
+        self.assertEqual(code, 0)
+        self.assertLessEqual(len(output.encode()), runtime.OUTPUT_LIMIT)
+        self.assertTrue(output.endswith("END"))
+
+    def test_timeout_kills_descendants_before_returning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "child-pid"
+            program = (
+                "import subprocess,sys,time; "
+                "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+                f"open({str(marker)!r},'w').write(str(p.pid)); time.sleep(60)"
+            )
+            code, output = runtime.run_cmd([sys.executable, "-c", program], timeout=0.3)
+            self.assertEqual(code, -1)
+            self.assertIn("timed out", output)
+            pid = int(marker.read_text())
+            # A killed orphan may remain a zombie briefly; it must not be running.
+            for _ in range(50):
+                stat = Path(f"/proc/{pid}/stat")
+                if not stat.exists() or stat.read_text().split()[2] == "Z":
+                    break
+                time.sleep(0.01)
+            else:
+                os.kill(pid, signal.SIGKILL)
+                self.fail("Timed-out command left its child process running")
+
+    def test_quota_detection_does_not_match_ordinary_provider_explanation(self):
+        self.assertFalse(runtime.quota_error("Implemented handling for RESOURCE_EXHAUSTED and 429."))
+        self.assertTrue(runtime.quota_error('AGY_ERROR: {"status":"RESOURCE_EXHAUSTED"}'))
+        self.assertTrue(runtime.quota_error("error: Individual quota reached."))
+
+
+if __name__ == "__main__":
+    unittest.main()

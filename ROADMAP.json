@@ -194,7 +194,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 20,
-      "completed_at": "2026-10-15T21:25:01.398929+00:00"
+      "completed_at": "2026-10-15T21:25:01.398929+00:00",
+      "closed_at": "2026-10-15T21:25:05Z"
     },
     {
       "id": "T-007",
@@ -202,10 +203,11 @@
       "title": "Agent runtime loop with task dispatch and failover chain",
       "description": "Implement the tri-agent orchestrator: pull approved tasks from ROADMAP.json, dispatch to Claude/Codex/Antigravity in failover chain, run verification gate, git commit + push on success. Port the paper pattern to software-factory (REPO, paths, verification_cmd).",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 21
+      "github_issue_number": 21,
+      "completed_at": "2026-10-15T21:34:02.975702+00:00"
     },
     {
       "id": "T-008",

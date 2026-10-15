@@ -17,3 +17,5 @@ __pycache__/
 tmp/
 *.zip
 *.tar.gz
+# Shared advisory lock for roadmap writers.
+ROADMAP.json.lock

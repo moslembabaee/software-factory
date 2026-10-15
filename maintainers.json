@@ -1,0 +1,5 @@
+{
+  "authorized_approvers": ["moslembabaee"],
+  "approval_keywords": ["/approve", "LGTM", "approved"],
+  "auto_triage": true
+}

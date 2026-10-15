@@ -51,6 +51,51 @@ idempotency and empty responses. Run it with
 These contract tests use a tenant database fixture; live PostgreSQL RLS checks
 remain in the storage integration suite enabled by `TEST_DATABASE_URL`.
 
+The API exposes unauthenticated `GET /health` for liveness. Under `/api/v1`,
+`projects`, `works`, `references`, and `relations` support POST, GET (list and
+item), PATCH, and DELETE. Lists accept `limit` (1–100, default 50) and `offset`
+(default 0). Creating a work requires an `Idempotency-Key` header (8–128
+characters); updating one requires its current `version`. Actor and execution
+reads and the execution lifecycle routes follow the OpenAPI contract above.
+
+Embed `buildApp({ authenticate })` or `startServer(port, { authenticate })`
+from `apps/api/src/index.ts` with a credential verifier that resolves a trusted
+`{ tenantId, actorId }`, or returns `null` for invalid credentials. Both IDs must
+be UUIDs, and the actor must exist in that tenant. The default authenticator
+denies all resource requests; standalone startup serves health but needs this
+integration for authenticated CRUD. Client tenant/actor headers never establish
+identity. The entry point exports `Authenticate` and `AppOptions` for adapters.
+
+The application pool reads `API_DATABASE_URL`, then `DATABASE_URL`, then the
+local development URL. Use administrator credentials only for migrations and
+seeding. After migrating, an administrator can grant a dedicated login role
+the permissions needed by the current API (configure its password separately):
+
+```sql
+CREATE ROLE sf_api LOGIN NOSUPERUSER NOBYPASSRLS;
+GRANT CONNECT ON DATABASE software_factory TO sf_api;
+GRANT USAGE ON SCHEMA public TO sf_api;
+GRANT SELECT ON actors, artifacts TO sf_api;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON projects, works, "references", relations TO sf_api;
+GRANT SELECT, INSERT, UPDATE ON idempotency_keys, executions TO sf_api;
+GRANT SELECT, INSERT ON events, outbox TO sf_api;
+GRANT SELECT, DELETE ON worker_leases TO sf_api;
+```
+
+Set `API_DATABASE_URL` to that login. Each authenticated resource request opens
+a transaction, checks the database role, and sets `app.tenant_id` and
+`app.actor_id` locally before accessing tenant data. Success commits; failure
+rolls back; returning a pooled
+connection clears the identity. Fastify closes its owned pool on shutdown;
+callers supplying a database remain responsible for closing their own pool.
+
+With `TEST_DATABASE_URL` set, `apps/api/src/__tests__/resources.integration.test.ts`
+tests HTTP CRUD against a freshly migrated database through a non-superuser
+role. It checks persistence, cross-tenant reads and mutations, foreign-key
+isolation, optimistic versions, rollback, and identity cleanup while reusing a
+single pooled connection. It creates and removes its own database and role.
+
 Database migrations live in `infra/migrations/<timestamp>_<name>/`, with an
 `up.sql` and `down.sql` in each directory. The initial migration's `up.sql`
 matches `docs/45_STORAGE_SCHEMA.sql` byte for byte, including its Phase 1 RLS

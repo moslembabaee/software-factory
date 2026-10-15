@@ -10,7 +10,7 @@ const resourceId = "00000000-0000-4000-8000-000000000003";
 const apps: FastifyInstance[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-function fixture(authenticated = true) {
+function fixture(authenticated = true, identity = { tenantId, actorId }) {
   let requestHash: unknown;
   const query = vi.fn<(sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>>()
     .mockImplementation((sql, values) => {
@@ -23,7 +23,7 @@ function fixture(authenticated = true) {
     withTenant: (_identity, operation) => operation({ query } as unknown as pg.PoolClient),
   };
   const withTenant = vi.spyOn(database, "withTenant");
-  const app = buildApp({ database, ...(authenticated ? { authenticate: () => ({ tenantId, actorId }) } : {}) });
+  const app = buildApp({ database, ...(authenticated ? { authenticate: () => identity } : {}) });
   apps.push(app);
   return { app, withTenant, query };
 }
@@ -35,6 +35,16 @@ describe("resource API", () => {
     expect(response.statusCode).toBe(401);
     expect(withTenant).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({ code: "FORBIDDEN", correlation_id: response.headers["x-request-id"] });
+  });
+
+  it.each([
+    { tenantId: "invalid", actorId },
+    { tenantId, actorId: "invalid" },
+  ])("rejects malformed resolved identity before touching storage: %j", async (identity) => {
+    const { app, withTenant } = fixture(true, identity);
+    const response = await app.inject({ method: "GET", url: "/api/v1/projects" });
+    expect(response.statusCode).toBe(401);
+    expect(withTenant).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -6,6 +6,8 @@ export const BuildStatusSchema = z.enum([
   "pending_approval",
   "approved",
   "in_progress",
+  "ready_for_verification",
+  "verified",
   "completed",
   "failed",
   "cancelled",

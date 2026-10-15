@@ -105,8 +105,8 @@ tasks also require authenticated `gh` access. Use a dedicated checkout with an
 `origin` remote and Git author identity configured: successful runs stage all
 checkout changes and push to `main` without force.
 
-Run `python3 orchestrator.py --once` to process at most one approved task, or use
-`--project-root`, `--repo`, `--remote` and `--branch` to target another checkout.
+Run `python3 orchestrator.py --once` to process at most one approved or ready task,
+or use `--project-root`, `--repo`, `--remote` and `--branch` to target another checkout.
 The defaults resolve paths relative to the script and use
 `moslembabaee/software-factory`. Each task must contain `id`, `title`,
 `description`, `status` and a nonempty trusted `verification_cmd`; the Software
@@ -122,8 +122,9 @@ to the next provider with bounded failure feedback. A provider quota requires
 that provider's quota to reset; it does not require an implementation repair.
 
 After an agent succeeds, the independent verification gate must pass before
-Git staging, commit and push. Any Git failure stops publication and leaves the
-task failed; push rejection preserves the local commit. Completion and its
+Git staging, commit and push. It records `verified` before publication. Any Git
+failure stops publication and leaves the task failed; push rejection preserves
+the local commit. Completion and its
 `commit_sha` are recorded in the local roadmap only after push succeeds, so this
 final bookkeeping is saved after the implementation checkpoint. This checkout's
 roadmap is the live scheduler state. `attempts`, failure tails and retry counts
@@ -132,6 +133,33 @@ concurrent edits and issue closures are preserved. The runtime writes local
 `ROADMAP.md` and `logs/orchestrator.log`. It does not automatically reclaim a
 stale `current_task_id` after a crash; inspect that task before approving it again
 and clearing the pointer.
+
+The worker also picks up `ready_for_verification` tasks automatically, including
+the current task after an agent marks it ready. Tasks already ready when a worker
+pass starts are verified without dispatching another agent or publishing to Git;
+success leaves them `verified` and releases their current-task pointer. Failure
+returns them to `in_progress` for repair.
+
+Run `python3 verify_task.py <task_id>` to verify an `in_progress` or
+`ready_for_verification` task directly. Use `--dry-run` to preview the command
+without executing or changing any files, `--timeout 300` to set the hard deadline
+in seconds, and `--project-root /path/to/checkout` to target another checkout.
+The default deadline is 300 seconds; timeout kills the command's process group.
+Both stdout and stderr are captured together. Each run appends to `verifications`
+in `ROADMAP.json`, recording a UTC timestamp, exit code (`-1` on timeout, `-2` on
+launch error), command, and the last 4,000 output characters. Success sets
+`status` to `verified`; failure sets `in_progress`, increments `retry_count`,
+appends the tail to `verification_failures`, and updates `last_error`. Other task
+fields and concurrent edits are preserved. A command or lifecycle change during
+execution cancels the result update. A repository lock prevents simultaneous
+verifiers from executing commands against the same checkout.
+
+For tasks without a command, standalone and ready-task verification record an
+explicit skip note without changing status or retries. The worker waits for a
+command to be supplied before revisiting a skipped task. Approved tasks still
+require a command before agent dispatch. The verifier CLI exits 0 for success,
+skip or dry-run, 1 for failure, cancellation or a busy verifier, and 2 for invalid
+input.
 
 This worker is separate from the tenant-facing Fastify API and PostgreSQL/RLS
 sandbox dispatch below. Its prompts and shell verification commands are trusted

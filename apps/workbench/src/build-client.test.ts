@@ -62,21 +62,25 @@ describe("Build workbench", () => {
     expect(progress).toContain('max="2" value="1"');
   });
 
-  it.each(["approved", "in_progress", "completed", "cancelled"] as const)(
-    "has no approval action for %s",
-    (status) => {
-      const next = { ...task, status };
-      expect(canApproveTask(next)).toBe(false);
-      const markup = renderToStaticMarkup(
-        createElement(BuildTaskCard, {
-          task: next,
-          busy: false,
-          onApprove: vi.fn(),
-        }),
-      );
-      expect(markup).not.toContain("<button");
-    },
-  );
+  it.each([
+    "approved",
+    "in_progress",
+    "ready_for_verification",
+    "verified",
+    "completed",
+    "cancelled",
+  ] as const)("has no approval action for %s", (status) => {
+    const next = { ...task, status };
+    expect(canApproveTask(next)).toBe(false);
+    const markup = renderToStaticMarkup(
+      createElement(BuildTaskCard, {
+        task: next,
+        busy: false,
+        onApprove: vi.fn(),
+      }),
+    );
+    expect(markup).not.toContain("<button");
+  });
 
   it("offers an explicit retry for failure and hides approval on closed issues", () => {
     const failed = { ...task, status: "failed" as const };

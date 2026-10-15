@@ -246,7 +246,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 24,
-      "completed_at": "2026-10-15T22:20:26.159113+00:00"
+      "completed_at": "2026-10-15T22:20:26.159113+00:00",
+      "closed_at": "2026-10-15T22:20:37Z"
     },
     {
       "id": "T-EVOLVE-1792061687-1",
@@ -254,10 +255,11 @@
       "title": "Add a task verification executor that runs verification_cmd and updates roadmap status",
       "description": "Implement a verifier module (verify_task.py) that executes a task's verification_cmd in the repo working directory with a hard timeout (e.g. 300s), captures stdout/stderr and exit code, and writes a verification record (timestamp, exit code, log tail) into the roadmap store. On exit code 0, transition the task to status 'verified'. On failure, transition it back to 'in_progress', increment retry_count, and append the failure log tail to the task record. Wire the verifier into orchestrator.py so tasks that an agent marks ready_for_verification are automatically picked up, and expose a `python verify_task.py <task_id>` CLI plus a dry-run flag. Preserve existing task fields untouched during the update and handle tasks with no verification_cmd by skipping verification with an explicit note.",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 12
+      "github_issue_number": 12,
+      "completed_at": "2026-10-15T22:40:07.564972+00:00"
     },
     {
       "id": "T-EVOLVE-1792061687-2",

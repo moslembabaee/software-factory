@@ -13,7 +13,8 @@ def generate_roadmap_markdown(roadmap_data: dict) -> str:
     tasks = roadmap_data.get("tasks", [])
     total = len(tasks)
     completed = [t for t in tasks if t.get("status") == "completed"]
-    in_progress = [t for t in tasks if t.get("status") == "in_progress"]
+    in_progress = [t for t in tasks if t.get("status") in
+                   ("in_progress", "ready_for_verification", "verified")]
     pending = [t for t in tasks if t.get("status") in ("pending", "failed", "approved")]
 
     pct = int((len(completed) / total * 100)) if total > 0 else 0
@@ -46,6 +47,7 @@ def generate_roadmap_markdown(roadmap_data: dict) -> str:
 
             md.append(f"### 🟡 `{t_id}` — {t_title}")
             md.append(f"- **Phase:** {t_phase}")
+            md.append(f"- **Status:** `{t['status']}`")
             md.append(f"- **Assigned Agent:** `{t_agent}`")
             md.append(f"- **Description:** {t_desc}")
             md.append(f"- **Quality Gate Command:** `{t_cmd}`")

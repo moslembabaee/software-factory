@@ -65,7 +65,7 @@ class RuntimeTests(unittest.TestCase):
 
         def observe(command, *args):
             if isinstance(command, list) and command[:2] == ["git", "push"]:
-                self.assertEqual(self.latest()["status"], "in_progress")
+                self.assertEqual(self.latest()["status"], "verified")
                 self.assertNotIn("completed_at", self.latest())
             return original(command, *args)
 
@@ -79,6 +79,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(task["completed_agent"], "claude")
         self.assertEqual(task["retry_count"], 0)
         self.assertEqual(task["attempts"][0]["verification_exit_code"], 0)
+        self.assertEqual(task["verifications"][0]["exit_code"], 0)
         self.assertEqual(task["custom_field"], {"preserve": True})
         self.assertEqual(self.data()["metadata"], {"keep": 1})
         self.assertEqual(self.git("log", "-1", "--format=%s"), f"feat(runtime): T-007 {task['title']}")
@@ -131,7 +132,54 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["claude", "codex"])
         self.assertIn("verification", calls[1][1])
         self.assertEqual(self.latest()["attempts"][0]["verification_exit_code"], 1)
+        self.assertEqual(self.latest()["retry_count"], 1)
+        self.assertEqual([v["exit_code"] for v in self.latest()["verifications"]], [1, 0])
         self.assertEqual(self.latest()["completed_agent"], "codex")
+
+    def test_ready_task_is_verified_without_dispatch_or_publication(self):
+        for current in (None, self.task["id"]):
+            with self.subTest(current=current):
+                data = self.data()
+                data["tasks"][0]["status"] = "ready_for_verification"
+                data["current_task_id"] = current
+                self.write(data)
+                with patch.object(runtime, "execute_agent_task") as agent, \
+                        patch.object(self.worker, "publish") as publish:
+                    self.assertEqual(self.worker.run_once(), "verified")
+                agent.assert_not_called()
+                publish.assert_not_called()
+                self.assertEqual(self.latest()["status"], "verified")
+                self.assertIsNone(self.data()["current_task_id"])
+                self.assertEqual(self.worker.run_once(), "idle")
+                self.assertIn("`verified`", (self.repo / "ROADMAP.md").read_text())
+
+    def test_ready_task_failure_returns_to_in_progress(self):
+        self.set_task(status="ready_for_verification", verification_cmd="echo broken >&2; exit 7")
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+        agent.assert_not_called()
+        self.assertEqual(self.latest()["status"], "in_progress")
+        self.assertEqual(self.latest()["retry_count"], 1)
+        self.assertIn("broken", self.latest()["verification_failures"][0])
+
+    def test_ready_task_without_command_is_skipped_once_until_command_added(self):
+        self.set_task(status="ready_for_verification", verification_cmd=None)
+        self.assertEqual(self.worker.run_once(), "skipped")
+        self.assertEqual(self.latest()["status"], "ready_for_verification")
+        self.assertIn("no verification_cmd", self.latest()["verifications"][0]["note"])
+        self.assertEqual(self.worker.run_once(), "idle")
+        self.assertEqual(len(self.latest()["verifications"]), 1)
+        self.set_task(verification_cmd="true")
+        self.assertEqual(self.worker.run_once(), "verified")
+
+    def test_agent_may_mark_task_ready_before_returning(self):
+        def agent(*_args):
+            self.set_task(status="ready_for_verification")
+            return 0, "ready"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent):
+            self.assertEqual(self.worker.run_once(), "completed")
+        self.assertEqual(self.latest()["verifications"][0]["exit_code"], 0)
 
     def test_verification_timeout_fails_over(self):
         self.config = runtime.RuntimeConfig(project_root=self.repo, verification_timeout=0.05)

@@ -170,24 +170,27 @@ describe("Build dashboard access and approvals", () => {
     expect(journal.match(/Task approved for dispatch/g)).toHaveLength(1);
   });
 
-  it.each(["in_progress", "completed", "cancelled"])(
-    "rejects approval after task changed to %s",
-    async (status) => {
-      const { app, path, data, roadmap } = await fixture();
-      const revision = (await roadmap.snapshot(identity, projectId)).tasks[0]
-        ?.revision;
-      data.tasks[0] = { ...task, status };
-      await writeFile(path, JSON.stringify(data));
-      const before = await readFile(path, "utf8");
-      const response = await app.inject({
-        method: "POST",
-        url: `${url}/tasks/${task.id}/approve`,
-        payload: { revision },
-      });
-      expect(response.statusCode).toBe(409);
-      expect(await readFile(path, "utf8")).toBe(before);
-    },
-  );
+  it.each([
+    "in_progress",
+    "ready_for_verification",
+    "verified",
+    "completed",
+    "cancelled",
+  ])("rejects approval after task changed to %s", async (status) => {
+    const { app, path, data, roadmap } = await fixture();
+    const revision = (await roadmap.snapshot(identity, projectId)).tasks[0]
+      ?.revision;
+    data.tasks[0] = { ...task, status };
+    await writeFile(path, JSON.stringify(data));
+    const before = await readFile(path, "utf8");
+    const response = await app.inject({
+      method: "POST",
+      url: `${url}/tasks/${task.id}/approve`,
+      payload: { revision },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(await readFile(path, "utf8")).toBe(before);
+  });
 
   it("keeps GitHub closure terminal and reflects it on the next read", async () => {
     const { app, roadmap, path, data } = await fixture();

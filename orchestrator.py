@@ -10,21 +10,20 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
-import os
 import re
 import shlex
 import signal
-import subprocess
-import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal
 
 import build_events
 import roadmap_store
 import roadmap_sync
+import verify_task
+from command_runner import OUTPUT_LIMIT, run_cmd
 from issue_lifecycle import (
     IGNORED_LABELS, issue_number_for_task, label_names, mark_issue_closed,
 )
@@ -32,7 +31,6 @@ from issue_lifecycle import (
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO = "moslembabaee/software-factory"
 AGENT_CHAIN = ("claude", "codex", "antigravity")
-OUTPUT_LIMIT = 16_000
 
 
 @dataclass(frozen=True)
@@ -74,43 +72,6 @@ def log(config: RuntimeConfig, message: str, task_id: str | None = None) -> None
         output.write(line + "\n")
     if task_id:
         build_events.emit(config.project_root, task_id, "orchestrator", message)
-
-
-def run_cmd(
-    command: str | Sequence[str], timeout: float = 720,
-    cwd: Path = PROJECT_ROOT,
-) -> tuple[int, str]:
-    """Shell only for trusted verification commands; argv for agent/Git transport.
-
-    File-backed capture bounds memory. A timeout kills the entire process group,
-    including shell children, before another agent can edit the same checkout.
-    """
-    with tempfile.TemporaryFile() as output:
-        try:
-            process = subprocess.Popen(
-                command, shell=isinstance(command, str), cwd=cwd,
-                stdin=subprocess.DEVNULL, stdout=output,
-                stderr=subprocess.STDOUT, start_new_session=True,
-            )
-        except OSError as error:
-            return -2, str(error)
-        timed_out = False
-        try:
-            process.wait(timeout=timeout)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            if isinstance(error, KeyboardInterrupt):
-                raise
-            timed_out = True
-        output.seek(max(0, output.tell() - OUTPUT_LIMIT))
-        tail = output.read().decode("utf-8", errors="replace")
-        if timed_out:
-            return -1, f"Command timed out after {timeout}s\n{tail}"
-        return process.returncode, tail
 
 
 def agent_order(assigned_agent: str) -> tuple[str, ...]:
@@ -171,12 +132,15 @@ class AgentRuntime:
     def load(self) -> dict:
         return json.loads(self.config.roadmap_file.read_text(encoding="utf-8"))
 
-    def update(self, task_id: str, change: Callable[[dict, dict], None]) -> bool:
+    def update(
+        self, task_id: str, change: Callable[[dict, dict], None],
+        statuses: tuple[str, ...] = ("in_progress",),
+    ) -> bool:
         """Mutate only the current live task, never overwrite a concurrent writer."""
         def apply(data: dict) -> bool:
             task = next((t for t in data["tasks"] if t["id"] == task_id), None)
             if (not task or task.get("closed_at") or
-                    task.get("status") != "in_progress" or
+                    task.get("status") not in statuses or
                     data.get("current_task_id") != task_id):
                 return False
             change(task, data)
@@ -240,7 +204,7 @@ class AgentRuntime:
             task.update(fields)
             task["status"] = status
             data["current_task_id"] = None
-        return self.update(task_id, apply)
+        return self.update(task_id, apply, ("in_progress", "verified"))
 
     def publish(self, task: dict) -> tuple[bool, str]:
         commands = [
@@ -256,7 +220,7 @@ class AgentRuntime:
                 return False, f"{shlex.join(command[:3])} failed ({code}): {output}"
             sha = output.strip()
         # Check closure/cancellation again before the external publication step.
-        if not self.update(task["id"], lambda _task, _data: None):
+        if not self.update(task["id"], lambda _task, _data: None, ("verified",)):
             return False, "Task closed or cancelled before push"
         code, output = run_cmd(
             ["git", "push", self.config.remote, f"{sha}:refs/heads/{self.config.branch}"],
@@ -278,24 +242,35 @@ class AgentRuntime:
             code, output = execute_agent_task(agent, build_prompt(task, self.config, feedback), self.config)
             failure = "quota" if quota_error(output) else ("agent" if code else None)
             verify_code = None
-            if not self.update(task_id, lambda _task, _data: None):
+            if not self.update(task_id, lambda _task, _data: None,
+                               ("in_progress", "ready_for_verification")):
                 return "cancelled"
             if failure is None:
                 log(self.config, f"Verifying {task_id}: {verification}", task_id)
-                verify_code, output = run_cmd(
-                    verification, self.config.verification_timeout, self.config.project_root,
+                def ready(current: dict, _data: dict) -> None:
+                    current["status"] = "ready_for_verification"
+                if not self.update(task_id, ready, ("in_progress", "ready_for_verification")):
+                    return "cancelled"
+                result = verify_task.verify_task(
+                    task_id, self.config.project_root,
+                    timeout=self.config.verification_timeout, runner=run_cmd,
                 )
-                if verify_code:
+                if result.outcome not in {"verified", "failed"}:
+                    return result.outcome
+                verify_code, output = result.exit_code, result.log_tail
+                if result.outcome == "failed":
                     failure = "verification"
             attempt = Attempt(agent, timestamp(), code, verify_code, failure, output[-4000:])
 
             def record(current: dict, _data: dict) -> None:
                 current.setdefault("attempts", []).append(asdict(attempt))
                 if failure:
-                    current["retry_count"] = current.get("retry_count", 0) + 1
+                    # Verification failures already incremented in the executor.
+                    if failure != "verification":
+                        current["retry_count"] = current.get("retry_count", 0) + 1
                     current["last_error"] = f"{agent}: {failure}\n{output[-4000:]}"
 
-            if not self.update(task_id, record):
+            if not self.update(task_id, record, ("in_progress", "verified")):
                 return "cancelled"
             if failure:
                 feedback = f"{agent}: {failure}\n{output[-4000:]}"
@@ -325,10 +300,28 @@ class AgentRuntime:
                 return "busy"
             if (self.config.project_root / "STOP_IMPROVEMENTS").exists():
                 return "stopped"
-            task = self.claim()
+            data = self.load()
+            current = data.get("current_task_id")
+            task = next((t for t in data["tasks"]
+                         if t.get("status") == "ready_for_verification"
+                         and not t.get("closed_at") and current in (None, t["id"])
+                         and not verify_task.skip_recorded(t) and self.eligible(t)), None)
+            verification_only = task is not None
+            if task is None:
+                task = self.claim()
             if task is None:
                 return "idle"
             try:
+                if verification_only:
+                    result = verify_task.verify_task(
+                        task["id"], self.config.project_root,
+                        timeout=self.config.verification_timeout, runner=run_cmd,
+                    )
+                    if result.outcome == "verified":
+                        self.update(task["id"], lambda _task, data: data.update(current_task_id=None),
+                                    ("verified",))
+                    log(self.config, f"Verification {task['id']}: {result.outcome} {result.note}", task["id"])
+                    return result.outcome
                 return self.execute(task)
             except Exception as error:
                 self.finish(task["id"], "failed", last_error=f"Runtime error: {error}")
@@ -344,7 +337,7 @@ class AgentRuntime:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--once", action="store_true", help="Process at most one approved task")
+    parser.add_argument("--once", action="store_true", help="Process at most one approved or ready task")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--remote", default="origin")

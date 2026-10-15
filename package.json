@@ -34,6 +34,7 @@
     "tsx": "^4.20.6",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "js-yaml": "^4.3.2"
   }
 }

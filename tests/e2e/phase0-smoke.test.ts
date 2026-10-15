@@ -83,7 +83,7 @@ it("boots the Phase 0 skeleton, migrates, seeds, and serves HTTP health", async 
   try {
     composeAttempted = true;
     await step("Compose startup and PostgreSQL health check (90s limit)", () =>
-      compose(["up", "-d", "--wait", "--wait-timeout", "90"], 120_000),
+      compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"], 120_000),
     );
     const address = await step("discover PostgreSQL's published port", () =>
       compose(["port", "postgres", "5432"]),
@@ -149,7 +149,7 @@ it("boots the Phase 0 skeleton, migrates, seeds, and serves HTTP health", async 
       expect(await response.json()).toMatchObject({
         status: "ok",
         service: "software-factory-api",
-        phase: 0,
+        phase: 1,
       });
     });
   } catch (error) {

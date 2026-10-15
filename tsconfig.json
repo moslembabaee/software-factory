@@ -9,6 +9,7 @@
     { "path": "packages/runtime" },
     { "path": "packages/storage" },
     { "path": "tests/e2e" },
+    { "path": "tests/contract" },
     { "path": "./tsconfig.tools.json" }
   ]
 }

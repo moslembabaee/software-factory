@@ -30,6 +30,7 @@ test("lint:tsc rejects type errors in every source workspace", () => {
   const sourceWorkspaces = [
     ...workspaces.filter((workspace) => existsSync(join(root, workspace, "src"))),
     "tests/e2e",
+    "tests/contract",
   ];
 
   function copyConfig(relativePath) {

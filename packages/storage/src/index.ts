@@ -1,7 +1,2 @@
-/**
- * @software-factory/storage
- *
- * Storage layer — PostgreSQL via pg, RLS helpers, and migration runner.
- * Placeholder scaffold for Phase 0.
- */
-export {};
+export { createApplicationPool, PostgresDatabase } from "./database.js";
+export type { TenantDatabase, TenantIdentity } from "./database.js";

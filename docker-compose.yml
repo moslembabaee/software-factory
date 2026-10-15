@@ -1,4 +1,26 @@
 services:
+  web:
+    build: .
+    container_name: software-factory_web
+    environment:
+      PORT: "3003"
+      API_DATABASE_URL: ${API_DATABASE_URL:-postgres://sf:sf_dev_pw@postgres:5432/software_factory}
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3003/health', { signal: AbortSignal.timeout(4000) }).then(response => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   postgres:
     image: postgres:16-alpine
     environment:

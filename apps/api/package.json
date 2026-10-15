@@ -10,9 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@software-factory/storage": "*",
     "fastify": "^5.0.0",
     "pg": "^8.23.1",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

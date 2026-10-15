@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+**/*.log
+logs
+coverage
+.aws
+.agents
+.codex

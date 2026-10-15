@@ -45,6 +45,21 @@ and append-only enforcement annotations. `infra/migrations/001_initial_schema`
 is a compatibility symlink to `20261015_001_initial_schema`; the runner only
 discovers timestamp directories, so it executes the migration once.
 
+Run `docker compose up -d --build --wait` to start PostgreSQL and the Fastify
+API. The `web` service uses container name `software-factory_web`, publishes
+port 3003, and waits for PostgreSQL to be healthy before starting. Its health
+check calls `GET http://127.0.0.1:3003/health` inside the container using Node.js;
+the same endpoint is available at `http://localhost:3003/health` on the host.
+The image runs the existing TypeScript entry point with `tsx` without a watcher.
+
+The API connects to `postgres:5432` on the Compose network, independently of
+`POSTGRES_PORT`. Set `API_DATABASE_URL` to override that connection for the web
+service. The default `sf` role is the development database administrator;
+tenant API operations require a non-superuser role without `BYPASSRLS`, which
+the storage layer enforces. Apply migrations separately using the commands
+below before making database-backed requests. Validate the Compose definition
+with `docker compose config --quiet`.
+
 Start PostgreSQL 16 with `docker compose up -d --wait postgres`, then run:
 
 ```sh

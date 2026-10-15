@@ -13,6 +13,7 @@ import { verifyMigrationSchema } from "../verify-migrations.js";
 const execute = promisify(execFile);
 const databaseUrl = process.env["TEST_DATABASE_URL"];
 const databaseName = `sf_migrations_${randomBytes(8).toString("hex")}`;
+const securityDir = "20261015_002_tenant_security";
 const initialDir = "20261015_001_initial_schema";
 const tenantTables = [
   "tenants",
@@ -140,9 +141,9 @@ describe
     `);
       expect(constraints.rows).toEqual([
         { type: "c", count: 9, validated: true },
-        { type: "f", count: 21, validated: true },
+        { type: "f", count: 24, validated: true },
         { type: "p", count: 16, validated: true },
-        { type: "u", count: 12, validated: true },
+        { type: "u", count: 13, validated: true },
       ]);
       const indexes = await pool.query<{
         indexname: string;
@@ -171,6 +172,8 @@ describe
       ]);
       expect(await cli("down", true)).toContain("Would roll back");
       expect(await tableNames()).toHaveLength(17);
+      expect(await cli("down")).toContain(`Rolled back: ${securityDir}`);
+      expect(await tableNames()).toHaveLength(17);
       expect(await cli("down")).toContain(`Rolled back: ${initialDir}`);
       expect(await tableNames()).toEqual(["_migrations"]);
       await expect(verifyMigrationSchema(pool)).rejects.toThrow(
@@ -187,6 +190,7 @@ describe
       ).toBe(1);
       expect(await cli("down")).toContain("Nothing to roll back");
       await cli("up");
+      await cli("down");
       await cli("down");
       expect(await tableNames()).toEqual(["_migrations"]);
     }, 90_000);
@@ -283,6 +287,7 @@ describe
           [tenant, execution],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+      expect(await migrateDown(pool)).toBe(securityDir);
       expect(await migrateDown(pool)).toBe(initialDir);
       expect(await tableNames()).toEqual(["_migrations"]);
       expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(0);
@@ -290,13 +295,13 @@ describe
 
     it("serializes simultaneous up and down calls without applying SQL twice", async () => {
       const results = await Promise.all([migrateUp(pool), migrateUp(pool)]);
-      expect(results.flat()).toEqual([initialDir]);
-      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(1);
+      expect(results.flat()).toEqual([initialDir, securityDir]);
+      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(2);
       const rolledBack = await Promise.all([
         migrateDown(pool),
         migrateDown(pool),
       ]);
-      expect(rolledBack.filter(Boolean)).toEqual([initialDir]);
+      expect(rolledBack.filter(Boolean).sort()).toEqual([initialDir, securityDir]);
       expect(await tableNames()).toEqual(["_migrations"]);
     });
 
@@ -322,7 +327,7 @@ describe
         });
         expect(await tableNames()).toEqual([]);
         // A failed invocation also releases its advisory lock and pooled connection.
-        expect(await migrateUp(pool)).toEqual([initialDir]);
+        expect(await migrateUp(pool)).toEqual([initialDir, securityDir]);
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }

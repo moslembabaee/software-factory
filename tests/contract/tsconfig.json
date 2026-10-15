@@ -4,5 +4,6 @@
     "rootDir": ".",
     "outDir": "./dist"
   },
+  "references": [{ "path": "../../apps/api" }],
   "include": ["src/**/*.ts", "*.config.ts"]
 }

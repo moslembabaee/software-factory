@@ -256,6 +256,32 @@ describe("transactional runner", () => {
 });
 
 describe("migration CLI", () => {
+  it.each(["up", "down"])(
+    "runs the migrate:%s npm script without requiring an IPC server",
+    (direction) => {
+      const outputPath = join(fixture(), "npm-cli.log");
+      const outputFd = openSync(outputPath, "w");
+      try {
+        const result = spawnSync(
+          "npm",
+          ["run", `migrate:${direction}`, "--", "--invalid"],
+          {
+            cwd: PROJECT_ROOT,
+            stdio: ["ignore", outputFd, outputFd],
+            timeout: 15_000,
+          },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(readFileSync(outputPath, "utf8")).toContain(
+          "Usage: migrate.ts <up|down> [--dry]",
+        );
+      } finally {
+        closeSync(outputFd);
+      }
+    },
+  );
+
   it.each([[], ["invalid"], ["up", "--invalid"], ["down", "--dry", "extra"]])(
     "rejects invalid arguments %j without connecting to PostgreSQL",
     (...args) => {

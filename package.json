@@ -4,7 +4,10 @@
   "private": true,
   "description": "Software Factory — Phase 0 monorepo skeleton (SF-ADR-001: TypeScript strict; SF-ADR-002: PostgreSQL).",
   "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "engines": {
     "node": ">=20.0.0"
   },
@@ -16,8 +19,8 @@
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "migrate:up": "tsx packages/storage/src/migrate.ts up",
-    "migrate:down": "tsx packages/storage/src/migrate.ts down",
+    "migrate:up": "node --import tsx packages/storage/src/migrate.ts up",
+    "migrate:down": "node --import tsx packages/storage/src/migrate.ts down",
     "test": "vitest run && node --test tests/tooling/*.test.mjs"
   },
   "devDependencies": {

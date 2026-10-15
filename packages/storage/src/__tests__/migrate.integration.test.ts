@@ -172,7 +172,7 @@ describe
       expect(await tableNames()).toEqual(["_migrations"]);
     }, 90_000);
 
-    it("enforces tenant composite foreign keys, uniqueness, and budget/state checks", async () => {
+    it("enforces tenant constraints and rolls back a populated schema", async () => {
       await migrateUp(pool);
       async function insert(
         sql: string,
@@ -264,6 +264,9 @@ describe
           [tenant, execution],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+      expect(await migrateDown(pool)).toBe(initialDir);
+      expect(await tableNames()).toEqual(["_migrations"]);
+      expect((await pool.query("SELECT * FROM _migrations")).rowCount).toBe(0);
     });
 
     it("serializes simultaneous up and down calls without applying SQL twice", async () => {

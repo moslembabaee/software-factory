@@ -6,7 +6,6 @@ This is a specification pack, not implemented software. v6.3 preserves all v6.2 
 
 Full scope retained. Start with docs/00_START_HERE.md and docs/48_DETERMINISTIC_ACCEPTANCE_AND_HANDOFF.md. This archive contains specifications and **reference** SQL/OpenAPI contracts, not a built product. The reference contracts require expansion for all capability families before implementation acceptance.
 
-
 Version 6.5 adds release evidence gates, immutable version-binding rules, concurrency policy and negative security/consumer test matrix. The ZIP contains specifications, not working application code.
 
 TypeScript workspaces extend `packages/tsconfig/base.json`. It enables strict
@@ -38,3 +37,36 @@ paths, and add their `tsconfig.json` to the root references. Add references to
 upstream workspace projects as dependencies are introduced. Workspace compiler
 configs also include local `*.config.ts` files; root tooling uses
 `tsconfig.tools.json`. Run `npm run typecheck && npm test` to verify changes.
+
+Database migrations live in `infra/migrations/<timestamp>_<name>/`, with an
+`up.sql` and `down.sql` in each directory. The initial migration's `up.sql`
+matches `docs/45_STORAGE_SCHEMA.sql` byte for byte, including its Phase 1 RLS
+and append-only enforcement annotations. `infra/migrations/001_initial_schema`
+is a compatibility symlink to `20261015_001_initial_schema`; the runner only
+discovers timestamp directories, so it executes the migration once.
+
+Start PostgreSQL 16 with `docker compose up -d --wait postgres`, then run:
+
+```sh
+export DATABASE_URL=postgres://sf:sf_dev_pw@127.0.0.1:5432/software_factory
+npm run migrate:up
+npm run migrate:down
+```
+
+`DATABASE_URL` defaults to the local Compose database above. Export it in the
+shell; the runner does not load `.env` files. `migrate:up` applies all pending
+migrations and `migrate:down` rolls back the last applied migration. Add
+`-- --dry` to preview either command without retaining database changes. The
+Node.js runner uses `pg`, a transaction and an advisory lock, and records
+checksums in `_migrations` to reject changed or missing applied migrations.
+Rollback drops the sixteen domain tables in reverse dependency order, along
+with their constraints and indexes. It preserves `_migrations` and the shared
+`pgcrypto` extension. Add a new timestamp directory for future schema changes
+rather than editing an applied migration.
+
+Set `TEST_DATABASE_URL` to a PostgreSQL 16+ connection to enable the live
+migration tests during `npm test`. Its role must be able to create databases;
+the tests create and delete a disposable database and exercise both npm
+commands, constraints, concurrency, and rollback. Without this variable, the
+live tests are skipped. `.github/workflows/migrations.yml` supplies PostgreSQL
+16 and this variable in CI.

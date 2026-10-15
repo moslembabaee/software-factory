@@ -64,10 +64,11 @@
       "title": "Issue #5: First database migration from storage schema (docs/45_STORAGE_SCHEMA.sql)",
       "description": "## Description\nCreate the first database migration strictly from `docs/45_STORAGE_SCHEMA.sql`. This migration is the canonical reference for all tenant tables.\n\n## Scope\nAll tables from the normative schema:\n- tenants, actors, projects, works, executions, events, outbox, idempotency_keys\n- agent_runs, worker_leases, approvals, external_effects, budget_ledger, artifacts\n- references, relations\n- Indexes: events_by_execution, execution_by_work, lease_expiry\n- Extension: pgcrypto\n\n## Migration framework\n- Use a Node.js migration runner (e.g., `node-pg-migrate` or `knex migrate`)\n- Migration files in `infra/migrations/` with timestamp-based naming\n- Both `up` and `down` scripts for each migration step\n- Append-only restrictions and RLS comment annotations included (enforcement in Phase 1)\n\n## Acceptance Criteria\n- [ ] `infra/migrations/001_initial_schema/up.sql` matches `docs/45_STORAGE_SCHEMA.sql` exactly\n- [ ] `infra/migrations/001_initial_schema/down.sql` drops all created tables\n- [ ] Migration runner executes `up.sql` against a fresh PostgreSQL 16 instance\n- [ ] Migration runner can roll back with `down.sql`\n- [ ] All UNIQUE, FOREIGN KEY, CHECK constraints present\n- [ ] Indexes created\n- [ ] `pgcrypto` extension enabled\n- [ ] `npm run migrate:up` and `npm run migrate:down` scripts work\n\nReference: Closes #5",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 5
+      "github_issue_number": 5,
+      "completed_at": "2026-10-15T12:05:06.679124+00:00"
     },
     {
       "id": "T-ISSUE-7",

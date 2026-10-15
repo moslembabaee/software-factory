@@ -6,6 +6,9 @@
  * Reference, Relation. Domain must not import runtime, API, or UI code
  * (docs/13 dependency rule).
  */
+export type { DomainPrimitive } from "./domain-primitive.js";
+export type { ValueObject, BrandValueObject } from "./value-object.js";
+
 export type { Work, WorkState } from "./work.js";
 export type { Actor, ActorKind } from "./actor.js";
 export type { Execution, ExecutionState } from "./execution.js";

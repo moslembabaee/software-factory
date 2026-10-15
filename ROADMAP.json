@@ -1,8 +1,8 @@
 {
   "project": "Software Factory",
   "version": "1.0.0",
-  "description": "Autonomous software factory engine — multi-phase build covering core APIs, RLS, queue/sandbox, agent runtime, and Ask/Build UI",
-  "current_task_id": "T-ISSUE-2-3",
+  "description": "Autonomous software factory engine \u2014 multi-phase build covering core APIs, RLS, queue/sandbox, agent runtime, and Ask/Build UI",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "T-ISSUE-2-1",
@@ -38,12 +38,13 @@
       "title": "Issue #2 (Part 3/3): Placeholder source files and root scripts",
       "description": "Create placeholder entry points: `apps/api/src/index.ts` exporting a noop function, `packages/factory-core/src/index.ts` re-exporting placeholder domain types (a DomainPrimitive interface and a ValueObject type). Set up root `package.json` scripts: `\"typecheck\": \"tsc --noEmit\"`, `\"test\": \"echo \\\"no tests yet\\\" && exit 0\"`. AC: `npx tsc --noEmit` exits 0; `npm run typecheck` exits 0; `npm test` exits 0.\n\nParent Issue: #2\nReference: Closes #2",
       "assigned_agent": "claude",
-      "status": "in_progress",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 2,
       "subtask_index": 3,
-      "total_subtasks": 3
+      "total_subtasks": 3,
+      "completed_at": "2026-10-15T11:29:09.392537+00:00"
     },
     {
       "id": "T-ISSUE-3",
@@ -93,7 +94,7 @@
       "id": "T-ISSUE-9",
       "phase": "Community & Issues",
       "title": "Issue #9: Package factory-core: domain model primitive types and Zod schemas",
-      "description": "## Description\nImplement `packages/factory-core` with the six primitive domain model types as TypeScript types and Zod runtime validation schemas, derived from `docs/45_STORAGE_SCHEMA.sql` and `docs/06_DOMAIN_AND_STORAGE_v2.md`.\n\n## Six primitives\n- Work (id, tenantId, projectId, createdBy, objective, state, version, timestamps)\n- Actor (id, tenantId, subject)\n- Execution (id, tenantId, workId, parentExecutionId, state, budgetCap, reserved, spent, timestamps)\n- Reference (id, tenantId, kind, targetId)\n- Relation (id, tenantId, fromRef, toRef, kind)\n- Event (id, tenantId, executionId, sequence, type, payload, occurredAt)\n\n## Deliverables\n- `packages/factory-core/src/primitives/` — one file per primitive\n- `packages/factory-core/src/index.ts` — barrel export\n- Zod schemas for runtime validation of each type\n- TypeScript types inferred from Zod schemas\n- Unit tests for schema validation (valid/invalid cases)\n\n## Acceptance Criteria\n- [ ] Every column from storage schema has a corresponding TS type field\n- [ ] Zod schemas reject invalid states (e.g., execution budget < 0)\n- [ ] Union types for state enums (ExecutionState, WorkState, EventType)\n- [ ] `npm run test -w packages/factory-core` passes\n- [ ] `tsc --noEmit` passes\n\nReference: Closes #9",
+      "description": "## Description\nImplement `packages/factory-core` with the six primitive domain model types as TypeScript types and Zod runtime validation schemas, derived from `docs/45_STORAGE_SCHEMA.sql` and `docs/06_DOMAIN_AND_STORAGE_v2.md`.\n\n## Six primitives\n- Work (id, tenantId, projectId, createdBy, objective, state, version, timestamps)\n- Actor (id, tenantId, subject)\n- Execution (id, tenantId, workId, parentExecutionId, state, budgetCap, reserved, spent, timestamps)\n- Reference (id, tenantId, kind, targetId)\n- Relation (id, tenantId, fromRef, toRef, kind)\n- Event (id, tenantId, executionId, sequence, type, payload, occurredAt)\n\n## Deliverables\n- `packages/factory-core/src/primitives/` \u2014 one file per primitive\n- `packages/factory-core/src/index.ts` \u2014 barrel export\n- Zod schemas for runtime validation of each type\n- TypeScript types inferred from Zod schemas\n- Unit tests for schema validation (valid/invalid cases)\n\n## Acceptance Criteria\n- [ ] Every column from storage schema has a corresponding TS type field\n- [ ] Zod schemas reject invalid states (e.g., execution budget < 0)\n- [ ] Union types for state enums (ExecutionState, WorkState, EventType)\n- [ ] `npm run test -w packages/factory-core` passes\n- [ ] `tsc --noEmit` passes\n\nReference: Closes #9",
       "assigned_agent": "claude",
       "status": "approved",
       "retry_count": 0,
@@ -104,7 +105,7 @@
       "id": "T-ISSUE-11",
       "phase": "Community & Issues",
       "title": "Issue #11: Phase 0 integration smoke test: end-to-end skeleton verification",
-      "description": "## Description\nCreate an integration smoke test that verifies the Phase 0 skeleton end-to-end: Docker Compose starts, migrations run, seed data is present, and the API placeholder responds.\n\n## Deliverables\n- `tests/e2e/phase0-smoke.test.ts` — vitest test that:\n  1. Shells out to `docker compose up -d`\n  2. Waits for DB health check\n  3. Runs migration via `npm run migrate:up`\n  4. Runs seed via `npm run db:seed`\n  5. Queries DB for tenants table (at least 1 row)\n  6. Verifies API placeholder starts and responds (HTTP 200 on health endpoint)\n  7. Tears down Docker Compose\n- CI workflow includes this test at the end of the pipeline\n\n## Acceptance Criteria\n- [ ] Smoke test script exists at `tests/e2e/phase0-smoke.test.ts`\n- [ ] Test runs in CI after migration verify\n- [ ] Test cleans up Docker resources on completion\n- [ ] Test is idempotent (can run repeatedly)\n- [ ] Fails with clear message if any component is missing\n\nReference: Closes #11",
+      "description": "## Description\nCreate an integration smoke test that verifies the Phase 0 skeleton end-to-end: Docker Compose starts, migrations run, seed data is present, and the API placeholder responds.\n\n## Deliverables\n- `tests/e2e/phase0-smoke.test.ts` \u2014 vitest test that:\n  1. Shells out to `docker compose up -d`\n  2. Waits for DB health check\n  3. Runs migration via `npm run migrate:up`\n  4. Runs seed via `npm run db:seed`\n  5. Queries DB for tenants table (at least 1 row)\n  6. Verifies API placeholder starts and responds (HTTP 200 on health endpoint)\n  7. Tears down Docker Compose\n- CI workflow includes this test at the end of the pipeline\n\n## Acceptance Criteria\n- [ ] Smoke test script exists at `tests/e2e/phase0-smoke.test.ts`\n- [ ] Test runs in CI after migration verify\n- [ ] Test cleans up Docker resources on completion\n- [ ] Test is idempotent (can run repeatedly)\n- [ ] Fails with clear message if any component is missing\n\nReference: Closes #11",
       "assigned_agent": "claude",
       "status": "approved",
       "retry_count": 0,
@@ -324,7 +325,7 @@
       "id": "T-ISSUE-7-3",
       "phase": "Community & Issues",
       "title": "Issue #7 (Part 3/3): Add PR/commit notification on failure using GitHub commit status",
-      "description": "Extend the CI workflow so that on failure: (8) notify stage runs if any prior step failed — use `github-script` action to set commit status to 'failure' with a link to the run. On success, set status to 'success'. Ensure the pipeline uses `actions/checkout@v4`, `actions/setup-node@v4`, and proper cache keys. Also add a `workflow_dispatch` trigger for manual re-runs. Verify final workflow is syntactically valid with `cd /root/projects/software-factory && npm run typecheck && npm test` and that `act` or `yaml` lint passes on the workflow file.\n\nParent Issue: #7\nReference: Closes #7",
+      "description": "Extend the CI workflow so that on failure: (8) notify stage runs if any prior step failed \u2014 use `github-script` action to set commit status to 'failure' with a link to the run. On success, set status to 'success'. Ensure the pipeline uses `actions/checkout@v4`, `actions/setup-node@v4`, and proper cache keys. Also add a `workflow_dispatch` trigger for manual re-runs. Verify final workflow is syntactically valid with `cd /root/projects/software-factory && npm run typecheck && npm test` and that `act` or `yaml` lint passes on the workflow file.\n\nParent Issue: #7\nReference: Closes #7",
       "assigned_agent": "claude",
       "status": "approved",
       "retry_count": 0,

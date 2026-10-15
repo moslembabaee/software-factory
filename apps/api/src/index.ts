@@ -6,3 +6,6 @@
  * HTTP server is started via `src/server.ts`.
  */
 export { buildApp, startServer } from "./server.js";
+
+/** Placeholder entry point for the API scaffold. */
+export function noop(): void {}

@@ -13,8 +13,8 @@
   },
   "scripts": {
     "build": "npm run typecheck",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests yet\" && exit 0"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

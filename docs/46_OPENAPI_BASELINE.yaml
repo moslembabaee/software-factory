@@ -1,0 +1,1049 @@
+openapi: 3.1.0
+info:
+  title: Software Factory API
+  version: '6.5'
+  description: Normative core and consumer API v6.4. Full non-consumer capability
+    families remain governed by capability inventory.
+servers:
+- url: /api/v1
+security:
+- bearerAuth: []
+paths:
+  /works:
+    post:
+      operationId: createWork
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - project_id
+              - objective
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                objective:
+                  type: string
+                  minLength: 1
+                  maxLength: 20000
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /works/{id}:
+    get:
+      operationId: getWork
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Work
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /works/{id}/executions:
+    post:
+      operationId: createExecution
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - base_sha
+              - budget_cap_usd
+              properties:
+                base_sha:
+                  type: string
+                  pattern: ^[a-fA-F0-9]{40}$
+                budget_cap_usd:
+                  type: number
+                  minimum: 0
+                  maximum: 100000
+                parent_execution_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /executions/{id}:
+    get:
+      operationId: getExecution
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Execution
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /executions/{id}/events:
+    get:
+      operationId: listEvents
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  next_cursor:
+                    type:
+                    - string
+                    - 'null'
+  /executions/{id}/cancel:
+    post:
+      operationId: cancelExecution
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Cancellation requested
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /executions/{id}/artifacts:
+    get:
+      operationId: listArtifacts
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Artifacts
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Artifact'
+  /approvals/{id}/decisions:
+    post:
+      operationId: decideApproval
+      parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - decision
+              - action_digest
+              - expected_version
+              properties:
+                decision:
+                  type: string
+                  enum:
+                  - approved
+                  - denied
+                action_digest:
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+                expected_version:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+                  maxLength: 2000
+      responses:
+        '200':
+          description: Decision accepted
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /projects/{projectId}/intake:
+    post:
+      operationId: createIntake
+      parameters: &id001
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Intake
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Intake'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - original_text
+              - locale
+              - assumptions
+              - acceptance_criteria
+              properties:
+                original_text:
+                  type: string
+                  minLength: 1
+                  maxLength: 20000
+                locale:
+                  type: string
+                  enum:
+                  - fa
+                  - en
+                assumptions:
+                  type: array
+                  items:
+                    type: string
+                acceptance_criteria: &id004
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                    - id
+                    - description
+                    properties:
+                      id: &id002
+                        type: string
+                        format: uuid
+                      description:
+                        type: string
+  /projects/{projectId}/consumer-status:
+    get:
+      operationId: getConsumerStatus
+      parameters: *id001
+      responses:
+        '200':
+          description: ConsumerStatus
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsumerStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /projects/{projectId}/previews:
+    post:
+      operationId: createPreview
+      parameters: *id001
+      responses:
+        '201':
+          description: Preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Preview'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - revision_id
+              - expires_at
+              - access_policy
+              properties:
+                revision_id: *id002
+                expires_at:
+                  type: string
+                  format: date-time
+                access_policy: &id005
+                  type: string
+                  enum:
+                  - project_members
+                  - explicit_grants
+  /previews/{previewId}:
+    get:
+      operationId: getPreview
+      parameters: &id003
+      - $ref: '#/components/parameters/PreviewId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Preview'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /previews/{previewId}/feedback:
+    post:
+      operationId: createFeedback
+      parameters: *id003
+      responses:
+        '201':
+          description: Feedback
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Feedback'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - comment
+              - target
+              properties:
+                comment:
+                  type: string
+                  minLength: 1
+                  maxLength: 10000
+                target: &id007
+                  type: object
+                  additionalProperties: false
+                  required:
+                  - viewport_width
+                  - viewport_height
+                  properties:
+                    selector:
+                      type: string
+                    x:
+                      type: number
+                      minimum: 0
+                    y:
+                      type: number
+                      minimum: 0
+                    viewport_width:
+                      type: integer
+                      minimum: 1
+                    viewport_height:
+                      type: integer
+                      minimum: 1
+                screenshot_artifact_id: *id002
+  /projects/{projectId}/revisions:
+    get:
+      operationId: listRevisions
+      parameters: *id001
+      responses:
+        '200':
+          description: RevisionList
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionList'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /revisions/{id}/compare:
+    get:
+      operationId: compareRevisions
+      parameters:
+      - $ref: '#/components/parameters/RevisionId'
+      - name: other
+        in: query
+        required: true
+        schema: *id002
+      responses:
+        '200':
+          description: RevisionComparison
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionComparison'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /projects/{projectId}/cost-forecast:
+    get:
+      operationId: getCostForecast
+      parameters: *id001
+      responses:
+        '200':
+          description: CostForecast
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostForecast'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /projects/{projectId}/delivery-receipt:
+    get:
+      operationId: getDeliveryReceipt
+      parameters: *id001
+      responses:
+        '200':
+          description: DeliveryReceipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReceipt'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /projects/{projectId}/acceptance-decisions:
+    post:
+      operationId: createAcceptanceDecision
+      parameters: *id001
+      responses:
+        '201':
+          description: AcceptanceDecision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptanceDecision'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - revision_id
+              - evidence_digest
+              - decision
+              - criterion_ids
+              - expected_version
+              properties:
+                revision_id: *id002
+                evidence_digest: &id006
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+                decision: &id009
+                  type: string
+                  enum:
+                  - accepted
+                  - rejected
+                criterion_ids: &id010
+                  type: array
+                  minItems: 1
+                  items: *id002
+                expected_version:
+                  type: integer
+                  minimum: 0
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: *id002
+    PreviewId:
+      name: previewId
+      in: path
+      required: true
+      schema: *id002
+    RevisionId:
+      name: id
+      in: path
+      required: true
+      schema: *id002
+  schemas:
+    Work:
+      type: object
+      required:
+      - id
+      - project_id
+      - objective
+      - state
+      - version
+      - request_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        objective:
+          type: string
+        state:
+          type: string
+        version:
+          type: integer
+        request_id:
+          type: string
+          format: uuid
+    Execution:
+      type: object
+      required:
+      - id
+      - work_id
+      - state
+      - version
+      - request_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        work_id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum:
+          - queued
+          - running
+          - awaiting_approval
+          - verifying
+          - needs_reconciliation
+          - cancelling
+          - completed
+          - failed
+          - cancelled
+          - budget_exhausted
+        version:
+          type: integer
+        request_id:
+          type: string
+          format: uuid
+    Event:
+      type: object
+      required:
+      - event_id
+      - execution_id
+      - sequence
+      - type
+      - occurred_at
+      - payload
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        execution_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 0
+        type:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+    Artifact:
+      type: object
+      required:
+      - id
+      - sha256
+      - media_type
+      properties:
+        id:
+          type: string
+          format: uuid
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        media_type:
+          type: string
+    ApiError:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      - message
+      - correlation_id
+      - retryable
+      - safe_action
+      properties:
+        code:
+          type: string
+          enum:
+          - VALIDATION_FAILED
+          - NOT_FOUND
+          - FORBIDDEN
+          - CONFLICT
+          - STALE_REVISION
+          - PREVIEW_EXPIRED
+          - PREVIEW_NOT_READY
+          - REDACTION_BLOCKED
+          - ACCEPTANCE_MISMATCH
+          - BUDGET_LIMIT
+          - UNKNOWN_EXTERNAL_EFFECT
+          - RATE_LIMITED
+          - INTERNAL_ERROR
+        message:
+          type: string
+        correlation_id: *id002
+        retryable:
+          type: boolean
+        safe_action:
+          type: string
+        details:
+          type: object
+    Intake:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - project_id
+      - version
+      - original_text
+      - locale
+      - assumptions
+      - acceptance_criteria
+      - created_at
+      properties:
+        id: *id002
+        project_id: *id002
+        version:
+          type: integer
+          minimum: 1
+        original_text:
+          type: string
+        locale:
+          type: string
+          enum:
+          - fa
+          - en
+        assumptions:
+          type: array
+          items:
+            type: string
+        acceptance_criteria: *id004
+        created_at:
+          type: string
+          format: date-time
+    Preview:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - project_id
+      - revision_id
+      - commit_sha
+      - state
+      - health
+      - expires_at
+      - access_policy
+      properties:
+        id: *id002
+        project_id: *id002
+        revision_id: *id002
+        commit_sha: &id008
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        state:
+          type: string
+          enum:
+          - requested
+          - building
+          - verifying
+          - ready
+          - failed
+          - expired
+          - revoked
+        health:
+          type: string
+          enum:
+          - unknown
+          - healthy
+          - unhealthy
+        expires_at:
+          type: string
+          format: date-time
+        access_policy: *id005
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+        evidence_digest: *id006
+    Feedback:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - project_id
+      - preview_id
+      - revision_id
+      - comment
+      - target
+      - status
+      properties:
+        id: *id002
+        project_id: *id002
+        preview_id: *id002
+        revision_id: *id002
+        comment:
+          type: string
+        target: *id007
+        screenshot_artifact_id: *id002
+        status:
+          type: string
+          enum:
+          - open
+          - triaged
+          - implemented
+          - rejected
+    Revision:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - project_id
+      - commit_sha
+      - evidence_digest
+      - created_at
+      properties:
+        id: *id002
+        project_id: *id002
+        commit_sha: *id008
+        evidence_digest: *id006
+        created_at:
+          type: string
+          format: date-time
+        parent_revision_id: *id002
+        preview_id: *id002
+        summary:
+          type: string
+    AcceptanceDecision:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - project_id
+      - revision_id
+      - evidence_digest
+      - decision
+      - criterion_ids
+      - version
+      properties:
+        id: *id002
+        project_id: *id002
+        revision_id: *id002
+        evidence_digest: *id006
+        decision: *id009
+        criterion_ids: *id010
+        version:
+          type: integer
+          minimum: 1
+    CostForecast:
+      type: object
+      additionalProperties: false
+      required:
+      - currency
+      - spent
+      - reserved
+      - authorized_cap
+      - estimate_low
+      - estimate_high
+      - assumptions
+      - updated_at
+      properties:
+        currency:
+          type: string
+          const: USD
+        spent:
+          type: number
+          minimum: 0
+        reserved:
+          type: number
+          minimum: 0
+        authorized_cap:
+          type: number
+          minimum: 0
+        estimate_low:
+          type: number
+          minimum: 0
+        estimate_high:
+          type: number
+          minimum: 0
+        assumptions:
+          type: array
+          items:
+            type: string
+        updated_at:
+          type: string
+          format: date-time
+    DeliveryReceipt:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - project_id
+      - revision_id
+      - acceptance_decision_id
+      - evidence_digest
+      - artifact_hashes
+      - instructions
+      - status
+      properties:
+        id: *id002
+        project_id: *id002
+        revision_id: *id002
+        acceptance_decision_id: *id002
+        evidence_digest: *id006
+        artifact_hashes:
+          type: array
+          minItems: 1
+          items: *id006
+        instructions:
+          type: string
+        caveats:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum:
+          - prepared
+          - delivered
+          - revoked
+    ConsumerStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - project_id
+      properties:
+        project_id: *id002
+        feature_statuses:
+          type: array
+          items:
+            type: object
+        blockers:
+          type: array
+          items:
+            type: string
+        spend:
+          $ref: '#/components/schemas/CostForecast'
+        active_release:
+          oneOf:
+          - $ref: '#/components/schemas/Revision'
+          - type: 'null'
+        latest_verified_preview:
+          oneOf:
+          - $ref: '#/components/schemas/Preview'
+          - type: 'null'
+    RevisionList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Revision'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+    RevisionComparison:
+      type: object
+      additionalProperties: false
+      required:
+      - left
+      - right
+      - changed_features
+      - evidence
+      properties:
+        left:
+          $ref: '#/components/schemas/Revision'
+        right:
+          $ref: '#/components/schemas/Revision'
+        changed_features:
+          type: array
+          items:
+            type: string
+        evidence:
+          type: array
+          items: *id006
+  responses:
+    Conflict:
+      description: Version or idempotency conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Invalid:
+      description: Invalid request schema
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: Resource not found or inaccessible
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    ValidationFailed:
+      description: ValidationFailed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Stale:
+      description: Stale
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Expired:
+      description: Expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    RedactionBlocked:
+      description: RedactionBlocked
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    BudgetLimit:
+      description: BudgetLimit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    UnknownEffect:
+      description: UnknownEffect
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'

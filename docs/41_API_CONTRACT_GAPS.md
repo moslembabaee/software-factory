@@ -1,0 +1,7 @@
+# API and storage contract completion requirements
+
+`33_API_EVENTS_AND_STORAGE_CONTRACTS.md` is a baseline endpoint inventory, **not** a complete executable API contract. Before implementing consumers, create `packages/contracts/openapi.yaml` and versioned JSON Schemas covering every documented public/internal endpoint and all flows in 01–30. For each operation specify authorization scopes, tenant resolution, path/query/body schema, response shape, pagination, idempotency semantics, expected version, status codes and structured errors. Generate types and validate requests/responses at runtime. Contract tests must compare generated clients against live handlers.
+
+Produce forward-only PostgreSQL migrations with PK/FK, not-null, unique, tenant indexes, event ordering, immutable audit/outbox, worker lease fencing, budget reservations and approval digest constraints. Document row-level security or equivalent query enforcement, transactional boundaries, retention, deletion and object-store consistency. No API or migration is considered complete merely because it is listed in the source document.
+
+Mandatory additional APIs: child execution orchestration, flow/subflow management, connector/MCP configuration, ACP sessions, policy inspection, settings, previews, feedback, audit exports and self-modification approval as required by source docs. The precise endpoint paths must be recorded in generated OpenAPI and backed by end-to-end tests.

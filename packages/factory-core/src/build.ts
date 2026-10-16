@@ -4,12 +4,14 @@ export const BuildStatusSchema = z.enum([
   "pending",
   "waiting_approval",
   "pending_approval",
+  "assigned",
   "approved",
   "in_progress",
   "ready_for_verification",
   "verified",
   "completed",
   "failed",
+  "escalated",
   "cancelled",
 ]);
 export const BuildTaskSchema = z.strictObject({
@@ -46,8 +48,12 @@ export type BuildSnapshot = z.infer<typeof BuildSnapshotSchema>;
 export function canApproveTask(task: BuildTask): boolean {
   return (
     !task.closed_at &&
-    ["pending", "waiting_approval", "pending_approval", "failed"].includes(
-      task.status,
-    )
+    [
+      "pending",
+      "waiting_approval",
+      "pending_approval",
+      "failed",
+      "escalated",
+    ].includes(task.status)
   );
 }

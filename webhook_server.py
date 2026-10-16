@@ -71,9 +71,11 @@ def mark_task_approved(issue_num: int):
         modified = False
         for task in data.get("tasks", []):
             if (task_matches_issue(task, issue_num) and not task.get("closed_at")
-                    and task.get("status") in ("waiting_approval", "pending_approval", "pending", "failed")):
+                    and task.get("status") in ("waiting_approval", "pending_approval", "pending", "failed", "escalated")):
                 task["status"] = "approved"
                 task["retry_count"] = 0
+                task.pop("backoff_until", None)
+                task.pop("backoff_seconds", None)
                 modified = True
         return modified
 

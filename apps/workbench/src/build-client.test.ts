@@ -97,6 +97,21 @@ describe("Build workbench", () => {
     expect(
       canApproveTask({ ...failed, closed_at: "2026-10-15T00:00:00Z" }),
     ).toBe(false);
+
+    const escalated = { ...task, status: "escalated" as const };
+    expect(canApproveTask(escalated)).toBe(true);
+    expect(
+      renderToStaticMarkup(
+        createElement(BuildTaskCard, {
+          task: escalated,
+          busy: false,
+          onApprove: vi.fn(),
+        }),
+      ),
+    ).toContain("Approve retry");
+    expect(
+      canApproveTask({ ...escalated, closed_at: "2026-10-15T00:00:00Z" }),
+    ).toBe(false);
   });
 
   it("renders Build navigation and an initial connecting state", () => {

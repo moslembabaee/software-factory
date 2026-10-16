@@ -9,7 +9,7 @@ import build_events
 import roadmap_store
 from issue_lifecycle import issue_number_for_task
 
-PENDING = {"pending", "pending_approval", "waiting_approval", "failed"}
+PENDING = {"pending", "pending_approval", "waiting_approval", "assigned", "failed", "escalated"}
 
 
 def revision(task: dict) -> str:
@@ -56,6 +56,8 @@ def approve(path: Path, identity: dict, project_id: str, task_id: str, expected:
             return False
         task["status"] = "approved"
         task["retry_count"] = 0
+        task.pop("backoff_until", None)
+        task.pop("backoff_seconds", None)
         task["build_approval"] = {"revision": expected, "actor_id": identity["actorId"],
                                   "approved_at": datetime.now(timezone.utc).isoformat()}
         return True

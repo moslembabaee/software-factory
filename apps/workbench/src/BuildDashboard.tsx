@@ -81,7 +81,7 @@ export function BuildTaskCard({
         >
           {busy
             ? "Approving…"
-            : task.status === "failed"
+            : task.status === "failed" || task.status === "escalated"
               ? "Approve retry"
               : "Approve task"}
         </button>

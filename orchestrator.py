@@ -148,6 +148,16 @@ class AgentRuntime:
         return roadmap_store.update_roadmap(self.config.roadmap_file, apply)
 
     def eligible(self, task: dict) -> bool:
+        backoff_until = task.get("backoff_until")
+        if backoff_until:
+            try:
+                dt = datetime.fromisoformat(str(backoff_until).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) < dt:
+                    return False
+            except (ValueError, TypeError):
+                pass
         number = issue_number_for_task(task)
         if not number:
             return True

@@ -259,7 +259,8 @@
       "retry_count": 2,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 12,
-      "completed_at": "2026-10-15T22:40:07.564972+00:00"
+      "completed_at": "2026-10-15T22:40:07.564972+00:00",
+      "closed_at": "2026-10-15T22:40:13Z"
     },
     {
       "id": "T-EVOLVE-1792061687-2",
@@ -267,10 +268,20 @@
       "title": "Add retry-with-backoff and stale-task recovery to the orchestrator",
       "description": "Add a recovery/scheduler pass (recover_tasks.py) that scans the roadmap store for tasks stuck in 'in_progress', 'waiting_approval', or 'assigned' states past a per-state TTL (default 30 minutes, configurable). For each stale task, increment retry_count, apply exponential backoff (2^retry_count * 5 min, capped at 4h) before the next agent assignment, and transition it to 'waiting_approval' with a reason recorded. After retry_count reaches a configurable max (default 3), mark the task status as 'escalated' and post a notice listing the task id, agent, retry history, and last log tail so maintainers.json contacts can act. Emit one line per action to a structured log consumed by watchdog.sh and ensure recovery runs are idempotent (a task must not be double-incremented by concurrent runs).",
       "assigned_agent": "claude",
-      "status": "approved",
-      "retry_count": 0,
+      "status": "completed",
+      "retry_count": 1,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-      "github_issue_number": 13
+      "github_issue_number": 13,
+      "verifications": [
+        {
+          "timestamp": "2026-10-16T01:38:49.890966+00:00",
+          "exit_code": 0,
+          "log_tail": "sk preview and explicit task acceptance > keeps independent concurrent submissions and scopes keys by tenant  853ms\n   \u2713 Ask preview and explicit task acceptance > returns a conflict when a retry key is reused with changed requirements  366ms\n   \u2713 Ask preview and explicit task acceptance > requires trusted authentication on /tasks  405ms\n   \u2713 Ask preview and explicit task acceptance > hides missing or cross-tenant projects on   492ms\n   \u2713 Ask preview and explicit task acceptance > hides missing or cross-tenant projects on /tasks  544ms\n   \u2713 Ask preview and explicit task acceptance > rejects invalid or forged acceptance before storage: {\"description\":\" \"}  387ms\n   \u2713 Ask preview and explicit task acceptance > rejects invalid or forged acceptance before storage: {\"description\":123}  330ms\n   \u2713 Ask preview and explicit task acceptance > rejects invalid or forged acceptance before storage: {\"description\":\"Build a task dashboard\",\"tenant_id\":\"00000000-0000-4000-8000-000000000004\",\"accepted\":true}  329ms\n   \u2713 Ask preview and explicit task acceptance > preserves a corrupt roadmap and returns a sanitized error  463ms\n \u2713 tests/contract/src/phase1.test.ts (138 tests) 2144ms\n   \u2713 Implemented HTTP contracts > requires trusted authentication on every implemented API operation  447ms\n \u2713 packages/storage/src/__tests__/agent-context.test.ts (29 tests) 67ms\n \u2713 apps/api/src/__tests__/server.test.ts (3 tests) 1506ms\n   \u2713 API server > builds and returns a Fastify instance  677ms\n   \u2713 API server > /health returns Phase 1 liveness without needing a database  447ms\n   \u2713 API server > returns 404 for unknown routes  380ms\n \u2713 packages/factory-core/src/__tests__/primitives.test.ts (174 tests) 125ms\n \u2713 apps/workbench/src/build-client.test.ts (17 tests) 51ms\n \u2713 packages/runtime/src/__tests__/agent-runtime.test.ts (7 tests) 60ms\n \u2713 packages/runtime/src/__tests__/queue-dispatcher.test.ts (11 tests) 58ms\n \u2713 apps/workbench/src/ask-client.test.ts (8 tests) 36ms\n \u2713 packages/events/src/__tests__/events.test.ts (7 tests) 43ms\n \u2713 packages/storage/src/__tests__/event-relay.test.ts (10 tests) 80ms\n \u2713 packages/storage/src/__tests__/work-queue.test.ts (31 tests) 45ms\n \u2713 packages/factory-core/src/__tests__/intake.test.ts (8 tests) 39ms\n \u2713 packages/storage/src/__tests__/execution-history.test.ts (10 tests) 26ms\n \u2713 packages/storage/src/__tests__/database.test.ts (6 tests) 59ms\n \u2193 apps/api/src/__tests__/resources.integration.test.ts (3 tests | 3 skipped)\n \u2193 packages/runtime/src/__tests__/queue-runtime.integration.test.ts (9 tests | 9 skipped)\n \u2193 packages/storage/src/__tests__/agent-context.integration.test.ts (11 tests | 11 skipped)\n \u2193 packages/storage/src/__tests__/migrate.integration.test.ts (4 tests | 4 skipped)\n \u2193 packages/storage/src/__tests__/tenant-security.integration.test.ts (25 tests | 25 skipped)\n \u2193 packages/storage/src/__tests__/work-queue.integration.test.ts (19 tests | 19 skipped)\n\n Test Files  18 passed | 6 skipped (24)\n      Tests  591 passed | 71 skipped (662)\n   Start at  01:38:01\n   Duration  30.83s (transform 1.41s, setup 0ms, collect 7.81s, tests 43.76s, environment 12ms, prepare 3.14s)\n\n\u2714 first release includes all history, required sections, and placeholder guidance (169.294675ms)\n\u2714 notes exclude previous releases and unrelated branches (141.743082ms)\n\u2714 breaking and migration footers retain multiline guidance and hidden breaking commits (153.011384ms)\n\u2714 empty release range has explicit fallback notes (194.0737ms)\n\u2714 tag publication requires the reusable full CI workflow at the selected commit (2.297873ms)\n\u2714 bootstrap selects the passing main SHA and skips existing tags or stale CI (7.36624ms)\n\u2714 tag pushes select the pushed commit and reject malformed version tags (0.611229ms)\n\u2714 repository agent runtime: failover, verification, lifecycle and local Git publication (5806.931654ms)\n\u2714 lint:tsc rejects type errors in every source workspace (16595.787294ms)\n\u2139 tests 9\n\u2139 suites 0\n\u2139 pass 9\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 17540.622351\n",
+          "command": "cd /root/projects/software-factory && npm run typecheck && npm test",
+          "skipped": false
+        }
+      ],
+      "completed_at": "2026-10-16T01:40:56.116697+00:00"
     },
     {
       "id": "T-EVOLVE-1792061687-3",

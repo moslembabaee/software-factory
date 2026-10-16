@@ -199,6 +199,18 @@ code {
   background: #fff0ed;
   color: #932d24;
 }
+.status-escalated {
+  background: #fdf2e9;
+  color: #a04000;
+}
+.status-waiting_approval {
+  background: #fef9e7;
+  color: #7d6608;
+}
+.status-assigned {
+  background: #e8f8f5;
+  color: #117a65;
+}
 .status-in_progress {
   background: #e0e9ff;
   color: #2747a9;

@@ -269,9 +269,11 @@ def process_issues():
             if matching_tasks:
                 reactivated = False
                 for t in matching_tasks:
-                    if t.get("status") in ("waiting_approval", "pending_approval", "pending", "failed"):
+                    if t.get("status") in ("waiting_approval", "pending_approval", "pending", "failed", "escalated"):
                         t["status"] = "approved"
                         t["retry_count"] = 0
+                        t.pop("backoff_until", None)
+                        t.pop("backoff_seconds", None)
                         roadmap_modified = True
                         reactivated = True
                         log(f"Issue #{num} task {t['id']} is now APPROVED/RE-APPROVED by maintainer!")

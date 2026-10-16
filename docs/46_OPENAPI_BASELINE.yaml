@@ -1541,12 +1541,14 @@ components:
                   - pending
                   - waiting_approval
                   - pending_approval
+                  - assigned
                   - approved
                   - in_progress
                   - ready_for_verification
                   - verified
                   - completed
                   - failed
+                  - escalated
                   - cancelled
               assigned_agent:
                 type: string

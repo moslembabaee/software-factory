@@ -68,6 +68,20 @@ fi
 # 4. Check & Process GitHub Issues (Triage, Authorize, Dispatch)
 python3 "$PROJECT_DIR/issue_bot.py" >> "$LOG_FILE" 2>&1
 
+# 4b. Recover stale tasks with retry backoff and escalation
+if [ -f "$PROJECT_DIR/recover_tasks.py" ]; then
+    RECOVERY_LOG="$LOG_DIR/recovery.log"
+    python3 "$PROJECT_DIR/recover_tasks.py" --structured-log "$RECOVERY_LOG" >> "$LOG_FILE" 2>&1
+    if [ -f "$RECOVERY_LOG" ] && [ -s "$RECOVERY_LOG" ]; then
+        while IFS= read -r action_line; do
+            if [ -n "$action_line" ]; then
+                echo "[$NOW] [WATCHDOG-RECOVERY] $action_line" >> "$LOG_FILE"
+            fi
+        done < "$RECOVERY_LOG"
+        > "$RECOVERY_LOG"
+    fi
+fi
+
 # 5. Continuous Deployment: Auto-deploy on new commits
 "$PROJECT_DIR/auto_deploy.sh" >> "$LOG_DIR/deploy.log" 2>&1
 

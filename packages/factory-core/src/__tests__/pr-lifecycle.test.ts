@@ -3,6 +3,10 @@ import {
   canAutoMerge,
   formatPullRequestBody,
   generateBranchName,
+  getPullRequestReviewers,
+  buildPullRequestMetadata,
+  createPullRequestPayload,
+  MaintainersSchema,
   PullRequestMetadataSchema,
   PullRequestSchema,
   RegressionContextSchema,
@@ -142,6 +146,79 @@ describe("pr-lifecycle domain logic and schemas", () => {
         url: "invalid-url",
       }),
     ).toThrow();
+  });
+
+  it("validates MaintainersSchema and extracts unique GitHub reviewers", () => {
+    const maintainers = {
+      authorized_approvers: ["moslembabaee"],
+      reviewers: ["reviewer-1", "reviewer-2", "reviewer-1"],
+      approval_keywords: ["/approve", "LGTM"],
+      auto_triage: true,
+    };
+    expect(MaintainersSchema.parse(maintainers)).toMatchObject({
+      authorized_approvers: ["moslembabaee"],
+      reviewers: ["reviewer-1", "reviewer-2", "reviewer-1"],
+    });
+
+    const extracted = getPullRequestReviewers(maintainers);
+    expect(extracted).toEqual(["reviewer-1", "reviewer-2"]);
+
+    // Fallback to authorized_approvers when reviewers list is omitted
+    expect(
+      getPullRequestReviewers({ authorized_approvers: ["lead-architect"] }),
+    ).toEqual(["lead-architect"]);
+
+    // Rejects invalid GitHub usernames
+    expect(() =>
+      getPullRequestReviewers({
+        reviewers: ["-invalid", "valid-user"],
+      }),
+    ).toThrow("Maintainer reviewers must be valid GitHub usernames");
+  });
+
+  it("builds PR metadata and formatted payload from roadmap task and maintainers", () => {
+    const task = {
+      id: "T-ISSUE-25",
+      title: "Issue #25: feat: Automated Pull Request Lifecycle",
+      description: "Automated PR lifecycle and git branch management",
+      phase: "Community & Issues",
+      assigned_agent: "claude",
+      verification_cmd: "npm run typecheck && npm test",
+      requirements: [
+        "Automated branch creation",
+        "Assign reviewers from maintainers.json",
+      ],
+      acceptance_criteria: ["CI passes and auto-merges"],
+      verification_gates: ["npm run typecheck && npm test"],
+      github_issue_number: 25,
+    };
+    const maintainers = {
+      authorized_approvers: ["moslembabaee"],
+      reviewers: ["moslembabaee"],
+    };
+
+    const metadata = buildPullRequestMetadata(task, maintainers);
+    expect(metadata.taskId).toBe("T-ISSUE-25");
+    expect(metadata.branch).toBe("factory/t-issue-25");
+    expect(metadata.baseBranch).toBe("main");
+    expect(metadata.reviewers).toEqual(["moslembabaee"]);
+    expect(metadata.issueNumber).toBe(25);
+    expect(metadata.requirements).toEqual([
+      "Automated branch creation",
+      "Assign reviewers from maintainers.json",
+    ]);
+
+    const payload = createPullRequestPayload(task, maintainers);
+    expect(payload.title).toBe(
+      "feat(T-ISSUE-25): Issue #25: feat: Automated Pull Request Lifecycle",
+    );
+    expect(payload.branch).toBe("factory/t-issue-25");
+    expect(payload.reviewers).toEqual(["moslembabaee"]);
+    expect(payload.body).toContain("T-ISSUE-25");
+    expect(payload.body).toContain("factory/t-issue-25");
+    expect(payload.body).toContain("@moslembabaee");
+    expect(payload.body).toContain("Closes #25");
+    expect(payload.body).toContain("Automated branch creation");
   });
 
   it("parses Vitest and TypeScript error logs into regression context", () => {

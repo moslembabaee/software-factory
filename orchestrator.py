@@ -52,7 +52,7 @@ class RuntimeConfig:
     repo: str = REPO
     remote: str = "origin"
     branch: str = "main"
-    agent_timeout: float = 720
+    agent_timeout: float = 2400
     verification_timeout: float = 300
     git_timeout: float = 120
     review_timeout: float = 30
@@ -574,7 +574,7 @@ def main() -> None:
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch", default="main")
-    parser.add_argument("--agent-timeout", type=float, default=720)
+    parser.add_argument("--agent-timeout", type=float, default=2400)
     parser.add_argument("--budget-cap-usd", type=float, default=None)
     parser.add_argument("--token-rates-json", type=json.loads, default=None,
                         help="Agent prompt/completion USD rates per million tokens")

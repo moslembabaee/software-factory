@@ -337,11 +337,16 @@ def process_issues():
                         t.pop("unlinked", None)
                         t.pop("unlinked_from_issue", None)
                         changed = True
-                    if t.get("status") == "paused":
+                    if t.get("status") == "paused" or t.get("status") in ("waiting_approval", "pending_approval", "pending", "failed", "escalated"):
+                        prev_status = t.get("status", "?")
                         t["status"] = "approved"
                         t.pop("paused_at", None)
                         t.pop("pause_reason", None)
+                        t.pop("backoff_until", None)
+                        t.pop("backoff_seconds", None)
+                        t["retry_count"] = 0
                         changed = True
+                        log(f"Reconcile activated task {t['id']} (was {prev_status}) for Issue #{num}")
                     if changed:
                         record = {
                             "timestamp": now_ts,
@@ -357,6 +362,9 @@ def process_issues():
                         build_events.emit(PROJECT_ROOT, t["id"], "webhook", record["message"])
                         roadmap_modified = True
                         log(f"Reconciled existing task {t['id']} for Issue #{num}")
+                    if "blocked" in labels:
+                        run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked"')
+                        log(f"Removed 'blocked' label from Issue #{num} (reconciled via {FACTORY_TASK_LABEL})")
             else:
                 # Create new roadmap task with bidirectional link
                 new_task = {

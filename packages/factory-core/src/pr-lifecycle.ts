@@ -194,6 +194,111 @@ export type CiStatus = z.infer<typeof CiStatusSchema>;
 export type PullRequestMetadata = z.infer<typeof PullRequestMetadataSchema>;
 export type PullRequest = z.infer<typeof PullRequestSchema>;
 
+export const MaintainersSchema = z
+  .object({
+    authorized_approvers: z.array(z.string()),
+    reviewers: z.array(z.string()).optional(),
+    approval_keywords: z.array(z.string()).optional(),
+    auto_triage: z.boolean().optional(),
+    label_config: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export type Maintainers = z.infer<typeof MaintainersSchema>;
+
+export function getPullRequestReviewers(maintainers: {
+  reviewers?: string[];
+  authorized_approvers?: string[];
+}): string[] {
+  const reviewers = maintainers.reviewers ?? maintainers.authorized_approvers ?? [];
+  if (
+    !Array.isArray(reviewers) ||
+    reviewers.some(
+      (r) => typeof r !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(r),
+    )
+  ) {
+    throw new TypeError("Maintainer reviewers must be valid GitHub usernames");
+  }
+  return Array.from(new Set(reviewers));
+}
+
+export interface TaskMetadataInput {
+  id: string;
+  title: string;
+  description: string;
+  phase: string;
+  assigned_agent?: string;
+  assignedAgent?: string;
+  verification_cmd?: string;
+  verificationCmd?: string;
+  requirements?: string[];
+  acceptance_criteria?: string[];
+  acceptanceCriteria?: string[];
+  verification_gates?: string[];
+  verificationGates?: string[];
+  github_issue_number?: number | null;
+  issueNumber?: number | null;
+  branch?: string;
+}
+
+export function buildPullRequestMetadata(
+  task: TaskMetadataInput,
+  maintainers?: { reviewers?: string[]; authorized_approvers?: string[] } | null,
+  options?: { baseBranch?: string; prefix?: string },
+): PullRequestMetadata {
+  const baseBranch = options?.baseBranch ?? "main";
+  const branch =
+    task.branch ??
+    generateBranchName(task.id, options?.prefix ?? "factory");
+  const reviewers = maintainers ? getPullRequestReviewers(maintainers) : [];
+  const assignedAgent = task.assignedAgent ?? task.assigned_agent;
+  const verificationCmd = task.verificationCmd ?? task.verification_cmd;
+  const requirements = task.requirements;
+  const acceptanceCriteria = task.acceptanceCriteria ?? task.acceptance_criteria;
+  const verificationGates = task.verificationGates ?? task.verification_gates;
+  const issueNumber = task.issueNumber ?? task.github_issue_number ?? undefined;
+
+  return PullRequestMetadataSchema.parse({
+    taskId: task.id,
+    title: `feat(${task.id}): ${task.title}`.slice(0, 120),
+    branch,
+    baseBranch,
+    description: task.description,
+    phase: task.phase,
+    assignedAgent,
+    verificationCmd,
+    reviewers,
+    requirements,
+    acceptanceCriteria,
+    verificationGates,
+    issueNumber: issueNumber ?? null,
+  });
+}
+
+export function createPullRequestPayload(
+  task: TaskMetadataInput,
+  maintainers?: { reviewers?: string[]; authorized_approvers?: string[] } | null,
+  options?: { baseBranch?: string; prefix?: string },
+): {
+  title: string;
+  body: string;
+  branch: string;
+  baseBranch: string;
+  reviewers: string[];
+  metadata: PullRequestMetadata;
+} {
+  const metadata = buildPullRequestMetadata(task, maintainers, options);
+  const body = formatPullRequestBody(metadata);
+  return {
+    title: metadata.title,
+    body,
+    branch: metadata.branch,
+    baseBranch: metadata.baseBranch,
+    reviewers: metadata.reviewers,
+    metadata,
+  };
+}
+
 export function generateBranchName(taskId: string, prefix = "factory"): string {
   const sanitized = taskId
     .replace(/[^a-zA-Z0-9\-]+/g, "-")

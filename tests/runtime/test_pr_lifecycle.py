@@ -642,6 +642,41 @@ class PullRequestTests(unittest.TestCase):
         self.assertTrue(task["rebase_result"]["success"])
         self.assertEqual(len(self.calls("merge")), 1)
 
+    def test_issue_25_lifecycle_branch_creation_and_auto_merge(self):
+        task_25 = {
+            "id": "T-ISSUE-25",
+            "title": "Issue #25: feat: Automated Pull Request Lifecycle and Git Branch Management",
+            "description": "Implement automated branch creation, pull request generation, and lifecycle management",
+            "phase": "Community & Issues",
+            "assigned_agent": "claude",
+            "status": "verified",
+            "verification_cmd": "npm run typecheck && npm test",
+            "verifications": [{"command": "npm run typecheck && npm test", "exit_code": 0}],
+            "requirements": ["Automated branch creation", "Assign reviewers from maintainers.json"],
+            "acceptance_criteria": ["CI passes and auto-merges"],
+            "verification_gates": ["npm run typecheck && npm test"],
+            "github_issue_number": 25,
+        }
+        self.change(**task_25)
+        def set_current(data):
+            data["current_task_id"] = "T-ISSUE-25"
+            return True
+        roadmap_store.update_roadmap(self.path, set_current)
+        self.task = task_25
+        ok, result = self.run_lifecycle()
+        self.assertTrue(ok, result)
+        self.assertTrue(result["merged"])
+        task = self.latest()
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["pr_status"], "merged")
+        self.assertEqual(task["branch"], "factory/t-issue-25")
+        self.assertEqual(task["reviewers"], ["reviewer"])
+        body = self.github.bodies[0]
+        self.assertIn("T-ISSUE-25", body)
+        self.assertIn("Closes #25", body)
+        self.assertIn("Automated branch creation", body)
+        self.assertIn("factory/t-issue-25", body)
+
 
 if __name__ == "__main__":
     unittest.main()

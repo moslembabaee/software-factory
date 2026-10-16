@@ -1,17 +1,33 @@
 # 🗺️ Live Development Roadmap & Task Tracker
 
-> **Last Updated:** `2026-10-16 04:23:16 UTC`  
+> **Last Updated:** `2026-10-16 10:37:10 UTC`  
 > **Supervisor:** Autonomous Tri-Agent Orchestra (`Claude Code` ↔ `OpenAI Codex` ↔ `Google Antigravity`)  
-> **Progress:** `[███████████░░░░░░░░░]` **31 / 52** tasks completed (**59%**)
+> **Progress:** `[████████████░░░░░░░░]` **32 / 52** tasks completed (**61%**)
 
 ---
 
 ## ⚡️ Currently In Progress
 
-### 🟡 `T-EVOLVE-1792118036-2` — Multi-Agent Consensus Review and Automated Security Gate
-- **Phase:** Continuous Polish & Evolution
+### 🟡 `T-ISSUE-19` — Issue #19: Sandbox execution environment for untrusted code
+- **Phase:** Phase 2: Queue + Sandbox
+- **Status:** `in_progress`
 - **Assigned Agent:** `CLAUDE`
-- **Description:** Implement a multi-agent review gate in orchestrator and pr_lifecycle that dispatches parallel specialized security and linting evaluations, enforcing consensus thresholds and policy checks before allowing automated pull request merges.
+- **Description:** ### 🎯 Architecture Roadmap Deliverable
+**Phase:** `Phase 2: Queue + Sandbox`
+**Task ID:** `T-005`
+
+## Description
+Create sandboxed worker process isolation (namespace/container-level) for executing user-submitted code. Implement stdout/stderr capture, timeout enforcement, and resource limits. Wire into the Execution primitive.
+
+## Verification Command
+```bash
+cd /root/projects/software-factory && npm run typecheck && npm test
+```
+
+---
+*Autonomous Software Factory Task*
+
+Reference: Closes #19
 - **Quality Gate Command:** `cd /root/projects/software-factory && npm run typecheck && npm test`
 
 ---
@@ -20,12 +36,25 @@
 
 | Priority | Task ID | Title | Assigned Agent | Phase |
 |:---:|:---|:---|:---:|:---|
-| **#1** | `T-EVOLVE-1792061687-3` | Add two-way GitHub issue <-> roadmap task sync | `CLAUDE` | Continuous Polish & Evolution |
-| **#2** | `T-EVOLVE-1792116220-1` | Automated Pull Request Lifecycle and Git Branch Management | `CLAUDE` | Continuous Polish & Evolution |
-| **#3** | `T-EVOLVE-1792118036-1` | Autonomous Regression Analysis and Self-Healing CI Pipeline | `CLAUDE` | Continuous Polish & Evolution |
-| **#4** | `T-EVOLVE-1792118036-3` | Telemetry, Token Cost Tracking, and Real-Time Agent Metrics | `CLAUDE` | Continuous Polish & Evolution |
-| **#5** | `T-EVOLVE-1792122960-2` | Concurrent Git Worktree Task Execution and Isolation | `CLAUDE` | Continuous Polish & Evolution |
-| **#6** | `T-EVOLVE-1792122960-3` | Token Cost and Runtime Latency Telemetry Aggregator | `CLAUDE` | Continuous Polish & Evolution |
+| **#1** | `T-ISSUE-28` | Issue #28: feat: Automated PR merge queue and conflict resolution handler | `CLAUDE` | Community & Issues |
+| **#2** | `T-ISSUE-29` | Issue #29: feat: Automated test failure diagnosis and iterative patch synthesis | `CLAUDE` | Community & Issues |
+| **#3** | `T-ISSUE-30` | Issue #30: feat: Real-time streaming event bus for orchestrator logs and dashboard telemetry | `CLAUDE` | Community & Issues |
+| **#4** | `T-005` | Sandbox execution environment for untrusted code | `CLAUDE` | Phase 2: Queue + Sandbox |
+| **#5** | `T-EVOLVE-1792061687-3` | Add two-way GitHub issue <-> roadmap task sync | `CLAUDE` | Continuous Polish & Evolution |
+| **#6** | `T-EVOLVE-1792116220-1` | Automated Pull Request Lifecycle and Git Branch Management | `CLAUDE` | Continuous Polish & Evolution |
+| **#7** | `T-EVOLVE-1792116220-2` | Agent Telemetry and Cost Analytics Pipeline | `CLAUDE` | Continuous Polish & Evolution |
+| **#8** | `T-EVOLVE-1792116220-3` | Self-Healing Workspace Rollback and Drift Reconciliation | `CLAUDE` | Continuous Polish & Evolution |
+| **#9** | `T-ISSUE-14` | Issue #14: feat: Add two-way GitHub issue <-> roadmap task sync | `CLAUDE` | Community & Issues |
+| **#10** | `T-ISSUE-25` | Issue #25: feat: Automated Pull Request Lifecycle and Git Branch Management | `CLAUDE` | Community & Issues |
+| **#11** | `T-ISSUE-26` | Issue #26: feat: Agent Telemetry and Cost Analytics Pipeline | `CLAUDE` | Community & Issues |
+| **#12** | `T-ISSUE-27` | Issue #27: feat: Self-Healing Workspace Rollback and Drift Reconciliation | `CLAUDE` | Community & Issues |
+| **#13** | `T-EVOLVE-1792118006-1` | Automated PR merge queue and conflict resolution handler | `CLAUDE` | Continuous Polish & Evolution |
+| **#14** | `T-EVOLVE-1792118006-2` | Automated test failure diagnosis and iterative patch synthesis | `CLAUDE` | Continuous Polish & Evolution |
+| **#15** | `T-EVOLVE-1792118006-3` | Real-time streaming event bus for orchestrator logs and dashboard telemetry | `CLAUDE` | Continuous Polish & Evolution |
+| **#16** | `T-EVOLVE-1792118036-1` | Autonomous Regression Analysis and Self-Healing CI Pipeline | `CLAUDE` | Continuous Polish & Evolution |
+| **#17** | `T-EVOLVE-1792118036-3` | Telemetry, Token Cost Tracking, and Real-Time Agent Metrics | `CLAUDE` | Continuous Polish & Evolution |
+| **#18** | `T-EVOLVE-1792122960-2` | Concurrent Git Worktree Task Execution and Isolation | `CLAUDE` | Continuous Polish & Evolution |
+| **#19** | `T-EVOLVE-1792122960-3` | Token Cost and Runtime Latency Telemetry Aggregator | `CLAUDE` | Continuous Polish & Evolution |
 
 ---
 
@@ -34,6 +63,7 @@
 | Status | Task ID | Title | Agent | Phase | Completed At |
 |:---:|:---|:---|:---:|:---|:---|
 | 🟢 Done | `T-EVOLVE-1792122960-1` | Automated Failure Analysis and Self-Healing Reflection Loop | `CLAUDE` | Continuous Polish & Evolution | `2026-10-16 04:23:16` |
+| 🟢 Done | `T-EVOLVE-1792118036-2` | Multi-Agent Consensus Review and Automated Security Gate | `CLAUDE` | Continuous Polish & Evolution | `Completed` |
 | 🟢 Done | `T-ISSUE-8-3` | Issue #8 (Part 3/3): Add CI status badge to README and draft initial v0.1.0 release notes | `CLAUDE` | Community & Issues | `2026-10-16 02:00:31` |
 | 🟢 Done | `T-ISSUE-8-2` | Issue #8 (Part 2/3): Add changelog configuration and versionrc | `CLAUDE` | Community & Issues | `2026-10-16 02:00:31` |
 | 🟢 Done | `T-ISSUE-8-1` | Issue #8 (Part 1/3): Create release workflow with CI gate and GitHub Release generation | `CLAUDE` | Community & Issues | `2026-10-16 02:00:31` |

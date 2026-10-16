@@ -88,6 +88,28 @@ def task_matches_issue(task: dict, number: int) -> bool:
     return issue_number_for_task(task) == number
 
 
+def mark_issue_in_progress(roadmap: dict, task: dict,
+                           working_branch: str | None = None) -> bool:
+    """Apply transparent active-execution state to a claimed task.
+
+    Adds a GitHub 'in-progress' label and (when a Rabbit message target is
+    available) records the commit/branch under which the agent is running.
+    This is a supervisor/side-effect call; it never touches application code.
+    """
+    number = issue_number_for_task(task)
+    if not number:
+        return False
+    modified = False
+    for candidate in roadmap.get("tasks", []):
+        if not task_matches_issue(candidate, number):
+            continue
+        candidate["status"] = "in_progress"
+        if working_branch:
+            candidate["active_branch"] = working_branch
+        modified = True
+    return modified
+
+
 def infer_phase_from_labels(labels: set[str] | list[str] | dict, label_config: dict | None = None) -> str:
     """Infer the roadmap phase from label configuration or defaults."""
     if isinstance(labels, dict):

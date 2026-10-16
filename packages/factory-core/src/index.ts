@@ -38,6 +38,13 @@ export {
   ExecutionStateSchema,
 } from "./primitives/execution.js";
 export type { Execution, ExecutionState } from "./primitives/execution.js";
+export {
+  SandboxStatusSchema,
+  SandboxLimitsObjectSchema,
+  SandboxLimitsSchema,
+  SandboxProgramSchema,
+  SandboxResultSchema,
+} from "./sandbox.js";
 export type {
   ExecutionSandbox,
   SandboxLimits,

@@ -291,6 +291,17 @@ class AgentRuntime:
                 return True
 
             if roadmap_store.update_roadmap(self.config.roadmap_file, apply):
+                # Advertise active execution on GitHub so stakeholders can see
+                # the issue is claimed. This runs outside the roadmap txn lock.
+                number = issue_number_for_task(claimed) if claimed else None
+                if number:
+                    log(self.config, f"Applying in-progress label on #{number}", claimed["id"])
+                    run_cmd(
+                        ["gh", "issue", "edit", str(number), "--repo", self.config.repo,
+                         "--add-label", "in-progress"],
+                        timeout=15,
+                        cwd=self.config.project_root,
+                    )
                 return claimed
         return None
 

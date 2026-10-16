@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import orchestrator as runtime
 import roadmap_store
+from github_fixture import GitHubStub
 
 
 class RuntimeTests(unittest.TestCase):
@@ -42,6 +43,12 @@ class RuntimeTests(unittest.TestCase):
         self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "initial")
         subprocess.run(["git", "init", "--quiet", "--bare", str(self.remote)], check=True)
         self.git("remote", "add", "origin", str(self.remote))
+        (self.repo / "implementation.txt").write_text("verified implementation")
+        (self.repo / "maintainers.json").write_text(json.dumps({"reviewers": ["reviewer", "factory-bot"]}))
+        self.github = GitHubStub()
+        transport = patch.object(runtime, "run_cmd", side_effect=self.github)
+        transport.start()
+        self.addCleanup(transport.stop)
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.repo, stderr=subprocess.STDOUT).decode().strip()
@@ -82,9 +89,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(task["verifications"][0]["exit_code"], 0)
         self.assertEqual(task["custom_field"], {"preserve": True})
         self.assertEqual(self.data()["metadata"], {"keep": 1})
-        self.assertEqual(self.git("log", "-1", "--format=%s"), f"feat(runtime): T-007 {task['title']}")
+        self.assertEqual(self.git("log", "factory/t-007", "-1", "--format=%s"), f"feat(T-007): {task['title']}")
         remote_sha = subprocess.check_output(
-            ["git", "--git-dir", str(self.remote), "rev-parse", "refs/heads/main"], text=True,
+            ["git", "--git-dir", str(self.remote), "rev-parse", "refs/heads/factory/t-007"], text=True,
         ).strip()
         self.assertEqual(task["commit_sha"], remote_sha)
         self.assertFalse((self.repo / "injected").exists())
@@ -136,22 +143,58 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([v["exit_code"] for v in self.latest()["verifications"]], [1, 0])
         self.assertEqual(self.latest()["completed_agent"], "codex")
 
-    def test_ready_task_is_verified_without_dispatch_or_publication(self):
-        for current in (None, self.task["id"]):
-            with self.subTest(current=current):
-                data = self.data()
-                data["tasks"][0]["status"] = "ready_for_verification"
-                data["current_task_id"] = current
-                self.write(data)
-                with patch.object(runtime, "execute_agent_task") as agent, \
-                        patch.object(self.worker, "publish") as publish:
-                    self.assertEqual(self.worker.run_once(), "verified")
-                agent.assert_not_called()
-                publish.assert_not_called()
-                self.assertEqual(self.latest()["status"], "verified")
-                self.assertIsNone(self.data()["current_task_id"])
-                self.assertEqual(self.worker.run_once(), "idle")
-                self.assertIn("`verified`", (self.repo / "ROADMAP.md").read_text())
+    def test_ready_task_is_verified_and_published_without_dispatch(self):
+        self.set_task(status="ready_for_verification")
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "completed")
+        agent.assert_not_called()
+        self.assertEqual(self.latest()["status"], "completed")
+        self.assertEqual(self.latest()["pr_status"], "merged")
+        self.assertIsNone(self.data()["current_task_id"])
+        self.assertEqual(self.worker.run_once(), "idle")
+
+    def test_pending_pr_is_polled_without_dispatching_or_verifying_again(self):
+        self.github.ci = []
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")) as agent:
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+            self.github.ci = [{"state": "SUCCESS"}]
+            self.assertEqual(self.worker.run_once(), "completed")
+        agent.assert_called_once()
+        self.assertEqual(len(self.latest()["verifications"]), 1)
+        self.assertEqual(self.latest()["pr_status"], "merged")
+
+    def test_publication_error_retries_without_another_agent_attempt(self):
+        self.github.offline = True
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")) as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+            self.assertEqual(self.latest()["status"], "verified")
+            self.github.offline = False
+            self.assertEqual(self.worker.run_once(), "completed")
+        agent.assert_called_once()
+        self.assertEqual(len(self.latest()["verifications"]), 1)
+        self.assertIsNone(self.latest()["publication_error"])
+
+    def test_next_task_starts_from_updated_base_after_prior_pr_merge(self):
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")):
+            self.assertEqual(self.worker.run_once(), "completed")
+        prior_sha = self.latest()["commit_sha"]
+        # Simulate GitHub advancing origin/main as part of merging the first PR.
+        subprocess.run(["git", "--git-dir", str(self.remote), "update-ref", "refs/heads/main", prior_sha], check=True)
+        data = self.data()
+        data["tasks"].append({**self.task, "id": "T-008", "status": "approved"})
+        self.write(data)
+        self.github.pr = None
+        self.github.ci = []
+        def agent(*_args):
+            self.assertEqual(self.git("rev-parse", "HEAD"), prior_sha)
+            self.assertEqual((self.repo / "implementation.txt").read_text(), "verified implementation")
+            (self.repo / "second.txt").write_text("next task")
+            return 0, "done"
+        with patch.object(runtime, "execute_agent_task", side_effect=agent):
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        self.assertEqual(self.data()["tasks"][1]["branch"], "factory/t-008")
+        self.assertEqual(self.latest()["status"], "completed")
 
     def test_ready_task_failure_returns_to_in_progress(self):
         self.set_task(status="ready_for_verification", verification_cmd="echo broken >&2; exit 7")
@@ -170,7 +213,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.worker.run_once(), "idle")
         self.assertEqual(len(self.latest()["verifications"]), 1)
         self.set_task(verification_cmd="true")
-        self.assertEqual(self.worker.run_once(), "verified")
+        self.assertEqual(self.worker.run_once(), "completed")
 
     def test_agent_may_mark_task_ready_before_returning(self):
         def agent(*_args):
@@ -293,7 +336,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(self.worker.run_once(), "failed")
         agent.assert_called_once()
         self.assertIn("git push failed", self.latest()["publication_error"])
-        self.assertEqual(self.latest()["status"], "failed")
+        self.assertEqual(self.latest()["status"], "verified")
         self.assertNotIn("completed_at", self.latest())
         self.assertIsNone(self.data()["current_task_id"])
         self.assertEqual(self.git("rev-list", "--count", "HEAD"), "2")
@@ -309,7 +352,7 @@ class RuntimeTests(unittest.TestCase):
         with patch.object(runtime, "execute_agent_task", return_value=(0, "done")), \
                 patch.object(runtime, "run_cmd", side_effect=command):
             self.assertEqual(self.worker.run_once(), "failed")
-        self.assertIn("index.lock", self.latest()["last_error"])
+        self.assertIn("index.lock", self.latest()["publication_error"])
         self.assertEqual(self.git("rev-list", "--count", "HEAD"), "1")
 
     def test_closed_and_excluded_issues_cannot_dispatch(self):
@@ -392,6 +435,151 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(self.data()["current_task_id"])
 
 
+    def fail_ci(self):
+        self.github.ci = [{"status": "COMPLETED", "conclusion": "FAILURE", "name": "unit tests"}]
+        self.github.run_log = (
+            "tests\tRun tests\t2026-10-16T02:00:00.000Z  FAIL tests/example.test.ts > regression\n"
+            "tests\tRun tests\t2026-10-16T02:00:00.000Z AssertionError: expected repaired\n"
+            "tests\tRun tests\t2026-10-16T02:00:00.000Z     at src/example.ts:10:5\n")
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")):
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        return self.data()["tasks"][1]
+
+    def test_ci_repair_dispatches_on_failed_branch_and_updates_existing_pr(self):
+        self.set_task(tenant_id="tenant-a", project_id="project-a")
+        fix = self.fail_ci()
+        source = self.latest()["commit_sha"]
+        self.assertEqual(fix["source_commit_sha"], source)
+        self.assertEqual((fix["tenant_id"], fix["project_id"]), ("tenant-a", "project-a"))
+        self.assertEqual(fix["regression_context"]["error_messages"], ["AssertionError: expected repaired"])
+
+        def repair(_agent, prompt, _config):
+            self.assertEqual(self.git("branch", "--show-current"), fix["target_branch"])
+            self.assertEqual(self.git("rev-parse", "HEAD"), source)
+            self.assertEqual((self.repo / "implementation.txt").read_text(), "verified implementation")
+            self.assertIn("src/example.ts:10:5", prompt)
+            self.assertIn("add or update a regression test", prompt)
+            self.assertIn(source, prompt)
+            (self.repo / "implementation.txt").write_text("repaired implementation")
+            self.github.ci = [{"status": "IN_PROGRESS"}]
+            return 0, "repaired"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=repair) as agent:
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        agent.assert_called_once()
+        fixed = self.data()["tasks"][1]
+        self.assertEqual(fixed["status"], "verified")
+        self.assertEqual(self.latest()["status"], "verified")
+        self.assertNotEqual(fixed["commit_sha"], source)
+        self.assertEqual(fixed["pr_number"], self.latest()["pr_number"])
+        self.assertEqual(len([c for c in self.github.calls if c[:3] == ["gh", "pr", "create"]]), 1)
+        self.assertEqual(self.git("branch", "--show-current"), "main")
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+            self.github.ci = [{"state": "SUCCESS"}]
+            self.assertEqual(self.worker.run_once(), "completed")
+        agent.assert_not_called()
+        self.assertTrue(all(t["status"] == "completed" for t in self.data()["tasks"]))
+        self.assertEqual(len(fixed["verifications"]), 1)
+        self.assertEqual(self.latest()["merge_commit_sha"], self.data()["tasks"][1]["merge_commit_sha"])
+        self.assertIsNone(self.data()["current_task_id"])
+        self.assertEqual(self.worker.run_once(), "idle")
+
+    def test_repair_refuses_changed_pr_before_agent_dispatch(self):
+        self.fail_ci()
+        self.github.pr["headRefOid"] = "b" * 40
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+        agent.assert_not_called()
+        self.assertEqual(self.data()["tasks"][1]["status"], "failed")
+        self.assertEqual(self.latest()["status"], "verified")
+        self.assertIsNone(self.data()["current_task_id"])
+
+    def test_failed_repair_is_not_regenerated_on_each_tick(self):
+        self.fail_ci()
+        with patch.object(runtime, "execute_agent_task", return_value=(1, "cannot repair")) as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+            self.assertEqual(self.worker.run_once(), "idle")
+        self.assertEqual(agent.call_count, len(runtime.AGENT_CHAIN))
+        self.assertEqual(len(self.data()["tasks"]), 2)
+
+    def test_repair_without_code_changes_does_not_regenerate_same_failure(self):
+        self.fail_ci()
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "no change")) as agent:
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        agent.assert_called_once()
+        self.assertEqual(len(self.data()["tasks"]), 2)
+        self.assertEqual(self.data()["tasks"][1]["self_healing_status"], "exhausted")
+
+    def test_repeated_failed_heads_have_bounded_healing_depth(self):
+        self.fail_ci()
+        # Each repair passes local verification but still fails in CI.
+        def repair(*_args):
+            (self.repo / "implementation.txt").write_text(str(len(self.data()["tasks"])))
+            return 0, "locally verified"
+        with patch.object(runtime, "execute_agent_task", side_effect=repair) as agent:
+            for _ in range(runtime.pr_lifecycle.MAX_HEALING_ATTEMPTS):
+                self.assertEqual(self.worker.run_once(), "ci_pending")
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        self.assertEqual(agent.call_count, runtime.pr_lifecycle.MAX_HEALING_ATTEMPTS)
+        self.assertEqual(len(self.data()["tasks"]), 1 + runtime.pr_lifecycle.MAX_HEALING_ATTEMPTS)
+        self.assertFalse(any(c[:3] == ["gh", "pr", "merge"] for c in self.github.calls))
+
+
+    def test_approved_ci_repair_precedes_unrelated_pending_pr(self):
+        self.fail_ci()
+        data = self.data()
+        data["tasks"].append({**self.latest(), "id": "T-unrelated", "bugfix_task_id": None})
+        self.write(data)
+        self.github.ci = [{"status": "IN_PROGRESS"}]
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "repaired")) as agent:
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        agent.assert_called_once()
+        self.assertIn("Task ID: T-007-FIX\n", agent.call_args.args[1])
+        self.assertEqual(self.data()["tasks"][2]["status"], "verified")
+
+    def test_parent_requirements_change_during_repair_prevents_push(self):
+        self.fail_ci()
+        before = self.github.pr["headRefOid"]
+        def repair(*_args):
+            self.set_task(requirements=["Changed requirement"])
+            return 0, "repaired"
+        with patch.object(runtime, "execute_agent_task", side_effect=repair):
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertEqual(self.github.pr["headRefOid"], before)
+        self.assertEqual(self.latest()["requirements"], ["Changed requirement"])
+        self.assertIsNone(self.data()["current_task_id"])
+        self.assertFalse(any(c[:3] == ["gh", "pr", "merge"] for c in self.github.calls))
+
+    def test_repair_push_timeout_after_remote_acceptance_is_recoverable(self):
+        self.fail_ci()
+        original = runtime.run_cmd
+        accepted = False
+        def runner(command, *args):
+            nonlocal accepted
+            result = original(command, *args)
+            if isinstance(command, list) and command[:2] == ["git", "push"] and not accepted:
+                accepted = True
+                return -1, "transport timed out after push"
+            return result
+        def repair(*_args):
+            (self.repo / "implementation.txt").write_text("repaired implementation")
+            self.github.ci = [{"status": "IN_PROGRESS"}]
+            return 0, "repaired"
+        with patch.object(runtime, "execute_agent_task", side_effect=repair), \
+                patch.object(runtime, "run_cmd", side_effect=runner):
+            self.assertEqual(self.worker.run_once(), "failed")
+        fixed = self.data()["tasks"][1]
+        self.assertEqual(fixed["status"], "verified")
+        self.assertEqual(fixed["repair_commit_sha"], self.github.pr["headRefOid"])
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "ci_pending")
+        agent.assert_not_called()
+        self.assertEqual(len(self.data()["tasks"][1]["verifications"]), 1)
+        self.assertEqual(len([c for c in self.github.calls if c[:3] == ["gh", "pr", "create"]]), 1)
+
+
 class TransportTests(unittest.TestCase):
     def test_chain_rotation_and_unknown_assignment(self):
         self.assertEqual(runtime.agent_order("claude"), ("claude", "codex", "antigravity"))
@@ -438,7 +626,10 @@ class TransportTests(unittest.TestCase):
             # A killed orphan may remain a zombie briefly; it must not be running.
             for _ in range(50):
                 stat = Path(f"/proc/{pid}/stat")
-                if not stat.exists() or stat.read_text().split()[2] == "Z":
+                try:
+                    if not stat.exists() or stat.read_text().split()[2] == "Z":
+                        break
+                except (FileNotFoundError, ProcessLookupError):
                     break
                 time.sleep(0.01)
             else:

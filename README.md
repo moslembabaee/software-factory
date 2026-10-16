@@ -101,9 +101,11 @@ single pooled connection. It creates and removes its own database and role.
 `python3 orchestrator.py` runs the trusted repository automation loop used by
 `watchdog.sh`. It requires Python 3.10+, Git, the authenticated `claude`, `codex`
 and `agy` CLIs, and the project's Node/npm installation on `PATH`. GitHub-linked
-tasks also require authenticated `gh` access. Use a dedicated checkout with an
-`origin` remote and Git author identity configured: successful runs stage all
-checkout changes and push to `main` without force.
+publication requires authenticated `gh` access with permission to create PRs,
+request reviews, and merge under the repository's branch rules. Use a dedicated
+checkout on the base branch with an `origin` remote, Git author identity, and a
+valid `maintainers.json`. Successful verification publishes a `factory/<task-id>`
+branch and opens a PR targeting `main` (or `--branch`).
 
 Run `python3 orchestrator.py --once` to process at most one approved or ready task,
 or use `--project-root`, `--repo`, `--remote` and `--branch` to target another checkout.
@@ -122,23 +124,94 @@ to the next provider with bounded failure feedback. A provider quota requires
 that provider's quota to reset; it does not require an implementation repair.
 
 After an agent succeeds, the independent verification gate must pass before
-Git staging, commit and push. It records `verified` before publication. Any Git
-failure stops publication and leaves the task failed; push rejection preserves
-the local commit. Completion and its
-`commit_sha` are recorded in the local roadmap only after push succeeds, so this
-final bookkeeping is saved after the implementation checkpoint. This checkout's
-roadmap is the live scheduler state. `attempts`, failure tails and retry counts
-are persisted after each attempt using the shared atomic roadmap store, while
-concurrent edits and issue closures are preserved. The runtime writes local
-`ROADMAP.md` and `logs/orchestrator.log`. It does not automatically reclaim a
-stale `current_task_id` after a crash; inspect that task before approving it again
-and clearing the pointer.
+Git staging, commit and push. `pr_lifecycle.py` re-reads the task and requires a
+successful, non-skipped verification for its current command. It creates a task
+branch without resetting existing branches, commits implementation files, pushes
+without force, and opens or reuses the branch's PR. PR title and body include the
+roadmap description, requirements, acceptance criteria, verification gates and
+linked issue. Reviewers come from `maintainers.json`'s `reviewers` array, falling
+back to `authorized_approvers` only when `reviewers` is absent. Duplicates and the
+PR author's own username are excluded from review requests. Missing or malformed
+configuration stops publication with a recorded error.
 
-The worker also picks up `ready_for_verification` tasks automatically, including
-the current task after an agent marks it ready. Tasks already ready when a worker
-pass starts are verified without dispatching another agent or publishing to Git;
-success leaves them `verified` and releases their current-task pointer. Failure
-returns them to `in_progress` for repair.
+The task stays `verified` while the PR is open. Every worker tick polls GitHub;
+there is no wait loop for CI. Missing, pending, failed or unknown checks,
+drafts, required reviews, conflicts and branch protection prevent merging.
+Successful checks must match the published head SHA, branch and base. The merge
+command uses `--match-head-commit` and never bypasses protections. A queued merge
+is still pending: only GitHub's confirmed `MERGED` state records `completed`,
+`merge_commit_sha` and `completed_at`. `commit_sha` remains the published task
+commit. Closing an unmerged PR records `pr_status=closed` without completing the
+task. GitHub closes linked issues through the PR's `Closes #...` reference.
+
+Before each automated merge, the worker dispatches independent security and lint
+reviewers concurrently over the PR diff. These are deterministic local checks for
+credential leaks, unsafe execution, RLS bypasses, debugging statements and blocker
+comments; CI remains responsible for the full project lint and test suites.
+The default consensus policy requires two distinct approving agents, an approval
+ratio of at least 0.66, and approval from every security and lint reviewer.
+Critical and error findings block merging across all review roles. Missing roles,
+duplicate identities, malformed results, exceptions and timeouts also block it.
+
+`RuntimeConfig.review_timeout` bounds the whole review batch to 30 seconds;
+`review_min_approvals` and `review_approval_threshold` configure its thresholds.
+Direct lifecycle callers can supply `review_timeout` and a `review_policy` using
+the keyword names from `evaluate_consensus_review_gate`. Policy comes from the
+trusted caller, not task descriptions. Review callbacks must be read-only. Python
+timeouts stop waiting for a callback; TypeScript callbacks receive an abort signal.
+No review calls an implementation CLI or recursively runs the verification suite.
+
+The gate refuses unavailable, empty, binary or truncated diffs. Diffs at or above
+the command transport's 16,000-byte capture limit require manual review. It
+rechecks the task, PR head and base commit, CI and GitHub review requirements after
+evaluation, and uses `--match-head-commit` for the merge request. Review evidence
+is stored in `consensus_review` with the reviewed head/base SHAs, findings, counts
+and policy violations; `security_gate_status`, `review_status` and
+`publication_error` explain a blocked merge. Credential snippets are redacted.
+Blocked tasks stay verified and can be reviewed again on a later worker tick.
+
+Failed checks on an open PR's verified head trigger self-healing. The worker
+fetches failed Actions runs using the configured repository and exact commit SHA,
+with explicit run IDs, at most three log reads and one shared 60-second deadline.
+External checks or unavailable Actions logs fall back to check metadata. Analysis
+normalizes Actions timestamps and ANSI colors, captures failing tests, compiler
+errors, implicated files and Python/JavaScript stack traces, and stores bounded
+`regression_analysis` with the PR number and source SHA.
+
+An atomic roadmap update creates one approved `-FIX` task per failed head,
+including `parent_task_id`, `source_commit_sha`, `target_branch`, verification
+command, regression context and inherited tenant/project scope. Repair tasks take
+priority over pending unrelated PRs. They check out the original failing branch,
+revalidate the PR head, and receive instructions to reproduce the failure and add
+a regression test. Successful local verification pushes the repair to the existing
+PR. Only matching successful CI and a confirmed merge complete the repair and its
+parent tasks. Cancellation or changed publication evidence blocks a repair. Failed
+agent chains are retained for inspection without generating duplicate tasks;
+a lineage can generate at most three repairs before recording
+`self_healing_status=exhausted`. CI polling never dispatches an unbounded retry loop.
+
+Git or GitHub failures preserve verification and `publication_error` for retry,
+including a pushed branch or PR created before a timeout. Open PRs are reconciled
+without another agent run or commit. Changing verification evidence or requirements
+after publication blocks automatic merging until the publication is reconciled.
+Publication uses a repository lock, and
+updates merge into live roadmap records without overwriting cancellation or
+changed requirements. The worker returns to the base branch after publication
+and fast-forwards it before the next approved task. A pending PR is reconciled
+before another feature task is dispatched; approved CI repairs take priority. It never force-resets local history.
+
+`ROADMAP.json`, `ROADMAP.md` and ignored runtime logs stay local to avoid merging
+stale scheduler state. `attempts`, failure tails and retry counts are saved via
+the atomic roadmap store. The runtime writes local `ROADMAP.md` and
+`logs/orchestrator.log`. Stale implementation `current_task_id` pointers still
+require explicit recovery; verified publication can resume after a restart.
+
+The worker also verifies `ready_for_verification` tasks without dispatching an
+agent, then publishes them through the same PR lifecycle. Failure returns them
+to `in_progress` for repair. Tasks verified with the standalone CLI are picked
+up for publication on the next worker tick. To retry publication manually, run
+`python3 pr_lifecycle.py <task_id>`; `python3 pr_lifecycle.py --scan-and-merge`
+reconciles existing verified PRs. Both support `--project-root` and `--repo`.
 
 Run `python3 verify_task.py <task_id>` to verify an `in_progress` or
 `ready_for_verification` task directly. Use `--dry-run` to preview the command

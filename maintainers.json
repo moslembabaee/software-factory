@@ -1,5 +1,17 @@
 {
   "authorized_approvers": ["moslembabaee"],
+  "reviewers": ["moslembabaee"],
   "approval_keywords": ["/approve", "LGTM", "approved"],
-  "auto_triage": true
+  "auto_triage": true,
+  "label_config": {
+    "phases": {
+      "phase/core-apis": "Phase 1: Core APIs + RLS",
+      "phase/queue-sandbox": "Phase 2: Queue + Sandbox",
+      "phase/agent-runtime": "Phase 3: Agent Runtime",
+      "phase/ask-build-ui": "Phase 4: Ask/Build UI",
+      "phase/polish": "Continuous Polish & Evolution",
+      "phase/evolution": "Continuous Polish & Evolution",
+      "phase/community": "Community & Issues"
+    }
+  }
 }

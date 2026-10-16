@@ -9,7 +9,7 @@ import build_events
 import roadmap_store
 from issue_lifecycle import issue_number_for_task
 
-PENDING = {"pending", "pending_approval", "waiting_approval", "assigned", "failed", "escalated"}
+PENDING = {"pending", "pending_approval", "waiting_approval", "assigned", "failed", "escalated", "paused"}
 
 
 def revision(task: dict) -> str:
@@ -27,9 +27,10 @@ def snapshot(path: Path, identity: dict, project_id: str) -> dict:
     for task in data["tasks"]:
         if not visible(task, identity, project_id):
             continue
+        status = "waiting_approval" if task["status"] == "paused" else task["status"]
         tasks.append({"id": task["id"], "title": task["title"],
                       "description": task.get("description", ""), "phase": task.get("phase", ""),
-                      "status": task["status"], "assigned_agent": task.get("assigned_agent", ""),
+                      "status": status, "assigned_agent": task.get("assigned_agent", ""),
                       "retry_count": task.get("retry_count", 0), "revision": revision(task),
                       "github_issue_number": issue_number_for_task(task),
                       "closed_at": task.get("closed_at"), "commit_sha": task.get("commit_sha")})

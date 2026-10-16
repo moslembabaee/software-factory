@@ -45,3 +45,43 @@ export { IntakeSchema, TaskProposalSchema, AskPlanSchema, PendingTaskSchema, Ask
 export type { TaskProposal, AskPlan, PendingTask, AskAcceptance } from "./intake.js";
 export { BuildStatusSchema, BuildTaskSchema, BuildLogSchema, BuildSnapshotSchema, BuildApprovalSchema, canApproveTask } from "./build.js";
 export type { BuildTask, BuildLog, BuildSnapshot } from "./build.js";
+export {
+  PullRequestStatusSchema,
+  CiStatusSchema,
+  PullRequestMetadataSchema,
+  PullRequestSchema,
+  RegressionContextSchema,
+  BugfixTaskSchema,
+  ReviewRoleSchema,
+  ReviewDecisionSchema,
+  ReviewFindingSchema,
+  ReviewEvaluationSchema,
+  ConsensusPolicySchema,
+  ConsensusReviewGateResultSchema,
+  generateBranchName,
+  formatPullRequestBody,
+  canAutoMerge,
+  parseCiErrorLogs,
+  generateBugfixTask,
+  evaluateSecurityReview,
+  evaluateLintReview,
+  dispatchParallelReviews,
+  evaluateConsensusReviewGate,
+} from "./pr-lifecycle.js";
+export type {
+  PullRequestStatus,
+  CiStatus,
+  PullRequestMetadata,
+  PullRequest,
+  RegressionContext,
+  BugfixTask,
+  ReviewRole,
+  ReviewDecision,
+  ReviewFinding,
+  ReviewEvaluation,
+  ConsensusPolicy,
+  ConsensusReviewGateResult,
+  DiffFileInput,
+  ReviewInput,
+} from "./pr-lifecycle.js";
+

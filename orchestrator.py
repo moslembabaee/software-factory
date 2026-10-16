@@ -11,7 +11,6 @@ import argparse
 import fcntl
 import json
 import re
-import shlex
 import signal
 import time
 from dataclasses import asdict, dataclass
@@ -21,6 +20,7 @@ from typing import Callable, Literal
 
 import build_events
 import roadmap_store
+import pr_lifecycle
 import roadmap_sync
 import verify_task
 from command_runner import OUTPUT_LIMIT, run_cmd
@@ -42,11 +42,19 @@ class RuntimeConfig:
     agent_timeout: float = 720
     verification_timeout: float = 300
     git_timeout: float = 120
+    review_timeout: float = 30
+    review_min_approvals: int = 2
+    review_approval_threshold: float = 0.66
     poll_seconds: float = 5
 
     @property
     def roadmap_file(self) -> Path:
         return self.project_root / "ROADMAP.json"
+
+    @property
+    def review_policy(self) -> dict:
+        return {"min_approvals": self.review_min_approvals,
+                "approval_threshold": self.review_approval_threshold}
 
 
 @dataclass(frozen=True)
@@ -122,6 +130,23 @@ Leave Git commits, pushes, and roadmap lifecycle updates to the orchestrator.
 """
     if feedback:
         prompt += f"\nPrevious attempt failed. Fix any implementation failure below.\n{feedback[-4000:]}\n"
+    if task.get("regression_context"):
+        ctx = task["regression_context"]
+        prompt += (f"\nRepair the existing PR on branch {task.get('target_branch', '')} "
+                   f"at failing commit {task.get('source_commit_sha', '')}. "
+                   "Reproduce the reported failure, make a focused fix, and add or update a regression test. "
+                   "Run the full verification command; preserve the existing quality gates.\n")
+        prompt += f"\nCI Failure Regression Context:\nSummary: {ctx.get('summary', '')}\n"
+        if ctx.get("failing_tests"):
+            prompt += "Failing Tests:\n" + "\n".join(f"- {t}" for t in ctx["failing_tests"]) + "\n"
+        if ctx.get("error_messages"):
+            prompt += "Errors:\n" + "\n".join(f"- {e}" for e in ctx["error_messages"]) + "\n"
+        if ctx.get("failing_files"):
+            prompt += "Implicated Files:\n" + "\n".join(f"- {f}" for f in ctx["failing_files"]) + "\n"
+        if ctx.get("stack_traces"):
+            prompt += "Stack traces:\n" + "\n".join(ctx["stack_traces"][:3])[:6000] + "\n"
+        elif ctx.get("raw_log_tail"):
+            prompt += "CI log tail:\n" + ctx["raw_log_tail"][-4000:] + "\n"
     return prompt
 
 
@@ -182,14 +207,26 @@ class AgentRuntime:
             log(self.config, f"Deferring {task['id']}: invalid issue response")
             return False
 
-    def claim(self) -> dict | None:
+    def claim(self, *, bugfix_only: bool = False) -> dict | None:
         data = self.load()
         if data.get("current_task_id"):
             return None  # Crash recovery is explicit; do not steal another task.
-        for candidate in data["tasks"]:
+        for candidate in sorted(data["tasks"], key=lambda t: not t.get("is_bugfix", False)):
+            if bugfix_only and not candidate.get("is_bugfix"):
+                continue
             if (candidate.get("status") != "approved" or
                     candidate.get("closed_at") or not self.eligible(candidate)):
                 continue
+            # Before another implementation, bring base forward to the merged PR.
+            # Control files are excluded from PR commits, so their live edits stay.
+            if not candidate.get("is_bugfix") and any(t.get("pr_status") == "merged" for t in data["tasks"]):
+                for command in (["git", "checkout", self.config.branch],
+                                ["git", "fetch", "--no-tags", self.config.remote, self.config.branch],
+                                ["git", "merge", "--ff-only", "FETCH_HEAD"]):
+                    code, output = run_cmd(command, self.config.git_timeout, self.config.project_root)
+                    if code:
+                        log(self.config, f"Deferring {candidate['id']}: cannot update base: {output}")
+                        return None
             claimed = None
 
             def apply(latest: dict) -> bool:
@@ -217,26 +254,32 @@ class AgentRuntime:
         return self.update(task_id, apply, ("in_progress", "verified"))
 
     def publish(self, task: dict) -> tuple[bool, str]:
-        commands = [
-            ["git", "add", "--all"],
-            ["git", "-c", "commit.gpgsign=false", "commit", "-m",
-             f"feat(runtime): {task['id']} {task['title']}"],
-            ["git", "rev-parse", "HEAD"],
-        ]
-        sha = ""
-        for command in commands:
-            code, output = run_cmd(command, self.config.git_timeout, self.config.project_root)
-            if code:
-                return False, f"{shlex.join(command[:3])} failed ({code}): {output}"
-            sha = output.strip()
-        # Check closure/cancellation again before the external publication step.
-        if not self.update(task["id"], lambda _task, _data: None, ("verified",)):
-            return False, "Task closed or cancelled before push"
-        code, output = run_cmd(
-            ["git", "push", self.config.remote, f"{sha}:refs/heads/{self.config.branch}"],
-            self.config.git_timeout, self.config.project_root,
+        success, result = pr_lifecycle.run_pr_lifecycle_for_verified_task(
+            task, self.config.project_root, repo=self.config.repo,
+            remote=self.config.remote, base_branch=self.config.branch,
+            runner=run_cmd, timeout=self.config.git_timeout,
+            review_timeout=self.config.review_timeout, review_policy=self.config.review_policy,
         )
-        return (False, f"git push failed ({code}): {output}") if code else (True, sha)
+        return success, str(result.get("error") or result.get("pr_status", "open"))
+
+    def evaluate_review_gate(self, diff: str, files: list[str] | None = None) -> dict:
+        evaluations = pr_lifecycle.dispatch_parallel_reviews(
+            diff, files, self.config.project_root, run_cmd, review_timeout=self.config.review_timeout)
+        return pr_lifecycle.evaluate_consensus_review_gate(evaluations, **self.config.review_policy)
+
+    def publish_verified(self, task: dict) -> str:
+        success, detail = self.publish(task)
+        if not success:
+            # Keep successful verification for a publication retry on the next tick.
+            self.update(task["id"], lambda current, data: (
+                current.update(publication_error=detail), data.update(current_task_id=None)
+            ), ("verified",))
+            log(self.config, f"{task['id']}: {detail}", task["id"])
+            return "failed"
+        latest = next(t for t in self.load()["tasks"] if t["id"] == task["id"])
+        if latest.get("consensus_review"):
+            log(self.config, f"{task['id']}: {latest['consensus_review'].get('summary', '')}", task["id"])
+        return "completed" if latest["status"] == "completed" else "ci_pending"
 
     def execute(self, task: dict) -> str:
         task_id = task["id"]
@@ -244,6 +287,25 @@ class AgentRuntime:
         if not isinstance(verification, str) or not verification.strip():
             self.finish(task_id, "failed", last_error="Missing verification_cmd; dispatch refused")
             return "failed"
+        if task.get("is_bugfix"):
+            # Repairs must run on the failing implementation, not the base branch.
+            try:
+                parent = pr_lifecycle.repair_parent(task, self.load()["tasks"])
+            except ValueError as error:
+                self.finish(task_id, "failed", last_error=str(error))
+                return "failed"
+            info = pr_lifecycle.check_pr_ci_status(parent.get("pr_number"), self.config.project_root,
+                self.config.repo, run_cmd, self.config.git_timeout).get("pr", {})
+            if (info.get("state") != "OPEN" or info.get("headRefOid") != task.get("source_commit_sha")
+                    or info.get("headRefName") != task.get("target_branch")
+                    or info.get("baseRefName") != parent.get("base_branch")):
+                self.finish(task_id, "failed", last_error="CI repair parent or PR changed before dispatch")
+                return "failed"
+            for command in (["git", "checkout", task["target_branch"]], ["git", "rev-parse", "HEAD"]):
+                code, output = run_cmd(command, self.config.git_timeout, self.config.project_root)
+                if code or (command[1] == "rev-parse" and output.strip() != task["source_commit_sha"]):
+                    self.finish(task_id, "failed", last_error=f"CI repair checkout differs from failing head: {output}")
+                    return "failed"
         feedback = None
         for agent in agent_order(task.get("assigned_agent", "claude")):
             if not self.update(task_id, lambda _task, _data: None):
@@ -286,17 +348,10 @@ class AgentRuntime:
                 feedback = f"{agent}: {failure}\n{output[-4000:]}"
                 log(self.config, f"{task_id}: {agent} failed ({failure}); advancing failover chain", task_id)
                 continue
-            success, detail = self.publish(task)
-            if not success:
-                self.finish(task_id, "failed", last_error=detail, publication_error=detail)
-                log(self.config, f"{task_id}: {detail}", task_id)
-                return "failed"
-            if not self.finish(task_id, "completed", completed_at=timestamp(),
-                               completed_agent=agent, commit_sha=detail, last_error=None,
-                               publication_error=None):
+            if not self.update(task_id, lambda current, _data: current.update(
+                    completed_agent=agent, last_error=None), ("verified",)):
                 return "cancelled"
-            log(self.config, f"Completed and pushed {task_id} at {detail}", task_id)
-            return "completed"
+            return self.publish_verified(task)
         self.finish(task_id, "failed")
         return "failed"
 
@@ -312,25 +367,41 @@ class AgentRuntime:
                 return "stopped"
             data = self.load()
             current = data.get("current_task_id")
+            repairing = {t["parent_task_id"] for t in data["tasks"] if t.get("is_bugfix")
+                         and not t.get("closed_at") and t.get("status") not in ("completed", "cancelled")}
+            verified = next((t for t in sorted(data["tasks"], key=lambda t: not t.get("is_bugfix", False))
+                             if t.get("status") == "verified" and not t.get("closed_at")
+                             and t.get("pr_status") != "closed" and t["id"] not in repairing
+                             and current in (None, t["id"])), None)
             task = next((t for t in data["tasks"]
                          if t.get("status") == "ready_for_verification"
                          and not t.get("closed_at") and current in (None, t["id"])
                          and not verify_task.skip_recorded(t) and self.eligible(t)), None)
             verification_only = task is not None
-            if task is None:
+            priority_fix = None
+            if (current is None and not (verified and verified.get("is_bugfix"))
+                    and any(t.get("is_bugfix") and t.get("status") == "approved"
+                            and not t.get("closed_at") for t in data["tasks"])):
+                priority_fix = self.claim(bugfix_only=True)
+            if priority_fix is not None:
+                task, verified, verification_only = priority_fix, None, False
+            elif verified is not None:
+                task = verified
+            elif task is None:
                 task = self.claim()
             if task is None:
                 return "idle"
             try:
+                if verified is not None:
+                    return self.publish_verified(verified)
                 if verification_only:
                     result = verify_task.verify_task(
                         task["id"], self.config.project_root,
                         timeout=self.config.verification_timeout, runner=run_cmd,
                     )
-                    if result.outcome == "verified":
-                        self.update(task["id"], lambda _task, data: data.update(current_task_id=None),
-                                    ("verified",))
                     log(self.config, f"Verification {task['id']}: {result.outcome} {result.note}", task["id"])
+                    if result.outcome == "verified":
+                        return self.publish_verified(task)
                     return result.outcome
                 return self.execute(task)
             except Exception as error:

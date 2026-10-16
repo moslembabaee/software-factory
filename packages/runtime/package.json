@@ -13,6 +13,7 @@
   "dependencies": {
     "@software-factory/factory-core": "*",
     "@software-factory/events": "*",
+    "@software-factory/sandbox": "*",
     "@software-factory/storage": "*"
   },
   "devDependencies": {

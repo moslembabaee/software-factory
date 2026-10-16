@@ -1,4 +1,47 @@
+import { z } from "zod";
 import type { Execution } from "./primitives/execution.js";
+
+export const SandboxStatusSchema = z.enum([
+  "succeeded",
+  "failed",
+  "timed_out",
+  "output_limit",
+  "out_of_memory",
+  "cancelled",
+]);
+
+export const SandboxLimitsObjectSchema = z.object({
+  timeoutMs: z.number().int().positive(),
+  memoryMb: z.number().int().min(32),
+  cpus: z.number().positive(),
+  pids: z.number().int().positive(),
+  tmpfsMb: z.number().int().positive(),
+  maxOutputBytes: z.number().int().positive(),
+});
+
+export const SandboxLimitsSchema = SandboxLimitsObjectSchema.readonly();
+
+export const SandboxProgramSchema = z
+  .object({
+    code: z.string(),
+    trust: z.enum(["trusted", "untrusted"]).optional(),
+    limits: SandboxLimitsObjectSchema.partial().readonly().optional(),
+  })
+  .readonly();
+
+export const SandboxResultSchema = z
+  .object({
+    tenantId: z.uuid(),
+    executionId: z.uuid(),
+    sandboxRef: z.string(),
+    status: SandboxStatusSchema,
+    exitCode: z.number().int().nullable(),
+    stdout: z.string(),
+    stderr: z.string(),
+    durationMs: z.number().nonnegative(),
+    cleanupConfirmed: z.literal(true),
+  })
+  .readonly();
 
 export interface SandboxLimits {
   readonly timeoutMs: number;

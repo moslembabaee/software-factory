@@ -274,6 +274,74 @@ sandbox dispatch below. Its prompts and shell verification commands are trusted
 repository configuration. The regression suite runs through `npm test`, mocks
 providers, and uses disposable local Git repositories without external pushes.
 
+### Sandbox execution
+
+`@software-factory/sandbox` supplies `DockerSandbox`, also re-exported by
+`@software-factory/runtime`. Each running Execution receives an ephemeral,
+non-root Node container with a read-only root filesystem, private namespaces,
+no network, no host mounts, dropped capabilities and bounded writable tmpfs.
+Source is JavaScript sent over stdin; it is never interpolated into a shell.
+The worker host needs a Docker CLI, a Linux daemon with resource enforcement,
+and a preloaded, operator-approved Node image pinned to its content digest.
+Run the worker separately from the API; the submitted code receives no daemon
+socket or application credentials.
+
+```ts
+import { DockerSandbox } from "@software-factory/sandbox";
+
+const image = process.env["SANDBOX_IMAGE"];
+if (!image) throw new Error("SANDBOX_IMAGE must be a preloaded digest-pinned image");
+const sandbox = new DockerSandbox({
+  image, // e.g. registry.example/approved-node@sha256:<64 hex characters>
+  limits: { timeoutMs: 30_000, memoryMb: 128 },
+});
+// Pass sandbox to createQueueRuntime below. The trusted program resolver can
+// set trust: "trusted" for local trusted tests only; omission means untrusted.
+```
+
+| Limit | Default | Absolute worker ceiling |
+| --- | --- | --- |
+| Wall-clock execution timeout | 30 seconds | 1 hour |
+| Memory (swap disabled) | 128 MiB | 4096 MiB |
+| CPUs | 1 | 4 |
+| Process count | 64 | 512 |
+| Each writable tmpfs mount | 16 MiB | 256 MiB |
+| Combined stdout/stderr | 1 MiB | 16 MiB |
+
+A program can reduce the operator's limits. Source is capped at 256 KiB of UTF-8.
+Results carry tenant/execution IDs, a unique sandbox reference, separate stdout
+and stderr, exit code, duration and a status (`succeeded`, `failed`, `timed_out`,
+`output_limit`, `out_of_memory` or `cancelled`). Setup and transport failures
+throw. Docker creation warnings fail closed before submitted code starts.
+Timeout, output overflow and cancellation force container removal, including
+descendant processes. Cleanup gets a separate bounded deadline;
+unconfirmed cleanup raises `SandboxCleanupError` and the dispatch remains
+unacknowledged for reconciliation. Success proposes `verifying`; independent
+verification still owns completion.
+
+[SF-ADR-004](docs/adrs/SF-ADR-004.md) requires independently validated strong
+isolation for production untrusted code. Untrusted submissions fail closed
+unless the operator configures `untrustedIsolation: { runtime, evidenceRef }`
+for the exact image/runtime/deployment after its isolation/escape suite passes.
+This configuration and the program's trust classification belong to the trusted
+worker, never the user request or model output. A runtime name and evidence
+reference record operator attestation; the adapter does not certify the runtime.
+There is no fallback to executing submitted code on the host.
+
+Unit tests exercise the Docker command protocol, actual CLI subprocess transport
+and fenced worker integration without requiring Docker. Run the opt-in OCI
+smoke tests against a disposable worker with a preloaded approved Node image:
+
+```bash
+SANDBOX_DOCKER_TESTS=1 \
+SANDBOX_TEST_IMAGE='registry.example/approved-node@sha256:<digest>' \
+npx vitest run packages/sandbox/src/__tests__/docker-sandbox.integration.test.ts
+```
+
+These smoke tests cover non-root identity, filesystem/network restrictions,
+output capture, timeouts, memory limits and container removal. They do not
+replace the independent production isolation/escape suite.
+
 ### Queue events and sandbox workers
 
 Apply migration `20261015_004_event_delivery` with `npm run migrate:up` before

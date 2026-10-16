@@ -2,7 +2,7 @@
   "project": "Software Factory",
   "version": "1.0.0",
   "description": "Autonomous software factory engine \u2014 multi-phase build covering core APIs, RLS, queue/sandbox, agent runtime, and Ask/Build UI",
-  "current_task_id": "T-ISSUE-19",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "T-ISSUE-28",
@@ -793,7 +793,7 @@
       "description": "### \ud83c\udfaf Architecture Roadmap Deliverable\n**Phase:** `Phase 2: Queue + Sandbox`\n**Task ID:** `T-005`\n\n## Description\nCreate sandboxed worker process isolation (namespace/container-level) for executing user-submitted code. Implement stdout/stderr capture, timeout enforcement, and resource limits. Wire into the Execution primitive.\n\n## Verification Command\n```bash\ncd /root/projects/software-factory && npm run typecheck && npm test\n```\n\n---\n*Autonomous Software Factory Task*\n\nReference: Closes #19",
       "assignee": null,
       "assigned_agent": "claude",
-      "status": "in_progress",
+      "status": "completed",
       "retry_count": 0,
       "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
       "github_issue_number": 19,
@@ -929,7 +929,9 @@
           "agent_duration_seconds": 670.484,
           "verification_duration_seconds": 56.111
         }
-      ]
+      ],
+      "completed_at": "2026-10-16T10:41:17Z",
+      "closed_at": "2026-10-16T10:41:17Z"
     },
     {
       "id": "T-ISSUE-25",

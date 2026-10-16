@@ -24,6 +24,16 @@ export type {
 export { ActorSchema, ActorKindSchema } from "./primitives/actor.js";
 export type { Actor, ActorKind } from "./primitives/actor.js";
 export {
+  DiagnosticCategorySchema,
+  FailureDiagnosticSchema,
+  FailureAnalysisSchema,
+} from "./failure-analysis.js";
+export type {
+  DiagnosticCategory,
+  FailureDiagnostic,
+  FailureAnalysis,
+} from "./failure-analysis.js";
+export {
   ExecutionSchema,
   ExecutionStateSchema,
 } from "./primitives/execution.js";
@@ -41,10 +51,45 @@ export { ReferenceSchema } from "./primitives/reference.js";
 export type { Reference } from "./primitives/reference.js";
 export { RelationSchema } from "./primitives/relation.js";
 export type { Relation } from "./primitives/relation.js";
-export { IntakeSchema, TaskProposalSchema, AskPlanSchema, PendingTaskSchema, AskAcceptanceSchema, proposeTasks } from "./intake.js";
-export type { TaskProposal, AskPlan, PendingTask, AskAcceptance } from "./intake.js";
-export { BuildStatusSchema, BuildTaskSchema, BuildLogSchema, BuildSnapshotSchema, BuildApprovalSchema, canApproveTask } from "./build.js";
-export type { BuildTask, BuildLog, BuildSnapshot } from "./build.js";
+export {
+  IntakeSchema,
+  TaskProposalSchema,
+  AskPlanSchema,
+  PendingTaskSchema,
+  AskAcceptanceSchema,
+  proposeTasks,
+} from "./intake.js";
+export type {
+  TaskProposal,
+  AskPlan,
+  PendingTask,
+  AskAcceptance,
+} from "./intake.js";
+export {
+  BuildStatusSchema,
+  BuildTaskSchema,
+  BuildLogSchema,
+  BuildSnapshotSchema,
+  BuildApprovalSchema,
+  BuildBudgetUpdateSchema,
+  TaskTokensSchema,
+  TaskBudgetSchema,
+  TaskTelemetrySchema,
+  BuildMetricsBudgetSchema,
+  BuildMetricsSchema,
+  canApproveTask,
+} from "./build.js";
+export type {
+  BuildTask,
+  BuildLog,
+  BuildSnapshot,
+  BuildBudgetUpdate,
+  TaskTokens,
+  TaskBudget,
+  TaskTelemetry,
+  BuildMetrics,
+  BuildMetricsBudget,
+} from "./build.js";
 export {
   PullRequestStatusSchema,
   CiStatusSchema,
@@ -84,4 +129,3 @@ export type {
   DiffFileInput,
   ReviewInput,
 } from "./pr-lifecycle.js";
-

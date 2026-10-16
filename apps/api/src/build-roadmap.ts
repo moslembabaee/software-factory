@@ -4,11 +4,18 @@ import type { TenantIdentity } from "@software-factory/storage";
 import {
   BuildSnapshotSchema,
   type BuildSnapshot,
+  type BuildBudgetUpdate,
 } from "@software-factory/factory-core";
 import { repositoryRoadmap } from "./ask-roadmap.js";
 import { ApiError } from "./errors.js";
 
 export interface BuildRoadmap {
+  setBudget(
+    identity: TenantIdentity,
+    projectId: string,
+    taskId: string,
+    update: BuildBudgetUpdate,
+  ): Promise<BuildSnapshot>;
   snapshot(identity: TenantIdentity, projectId: string): Promise<BuildSnapshot>;
   approve(
     identity: TenantIdentity,
@@ -27,6 +34,7 @@ export class FileBuildRoadmap implements BuildRoadmap {
     projectId: string,
     taskId?: string,
     revision?: string,
+    budget_cap_usd?: number | null,
   ): Promise<BuildSnapshot> {
     const output = await new Promise<string>((resolve, reject) => {
       const child = execFile(
@@ -41,7 +49,14 @@ export class FileBuildRoadmap implements BuildRoadmap {
       );
       child.stdin?.on("error", reject);
       child.stdin?.end(
-        JSON.stringify({ operation, identity, projectId, taskId, revision }),
+        JSON.stringify({
+          operation,
+          identity,
+          projectId,
+          taskId,
+          revision,
+          budget_cap_usd,
+        }),
       );
     });
     const result: unknown = JSON.parse(output);
@@ -52,7 +67,7 @@ export class FileBuildRoadmap implements BuildRoadmap {
         throw new ApiError(
           409,
           "CONFLICT",
-          "Task changed; refresh before approving",
+          "Task changed; refresh before updating",
         );
     }
     return BuildSnapshotSchema.parse(result);
@@ -63,6 +78,21 @@ export class FileBuildRoadmap implements BuildRoadmap {
     projectId: string,
   ): Promise<BuildSnapshot> {
     return this.run("snapshot", identity, projectId);
+  }
+  setBudget(
+    identity: TenantIdentity,
+    projectId: string,
+    taskId: string,
+    update: BuildBudgetUpdate,
+  ): Promise<BuildSnapshot> {
+    return this.run(
+      "budget",
+      identity,
+      projectId,
+      taskId,
+      update.revision,
+      update.budget_cap_usd,
+    );
   }
   approve(
     identity: TenantIdentity,

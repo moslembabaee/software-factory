@@ -14,6 +14,7 @@ import signal
 from typing import Callable, Literal
 
 from command_runner import run_cmd
+from failure_analysis import analyze_failure
 import roadmap_store
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -27,6 +28,7 @@ class VerificationResult:
     exit_code: int | None = None
     log_tail: str = ""
     note: str = ""
+    failure_analysis: dict | None = None
 
 
 def missing_command(task: dict) -> bool:
@@ -82,17 +84,25 @@ def verify_task(
         skipped = missing_command(initial)
         if skipped and skip_recorded(initial):
             return VerificationResult("skipped", note="Verification skipped: no verification_cmd configured")
+        analysis = None
         if skipped:
             code, tail = None, ""
             note = "Verification skipped: no verification_cmd configured"
         else:
             code, output = runner(initial["verification_cmd"], timeout, project_root)
             tail, note = output[-LOG_LIMIT:], ""
+            if code != 0:
+                # Analyze the transport's bounded capture before reducing the
+                # stored log tail; compiler/test diagnostics can precede noise.
+                analysis = analyze_failure(code, output, initial["verification_cmd"]).to_dict()
         record = {"timestamp": datetime.now(timezone.utc).isoformat(),
                   "exit_code": code, "log_tail": tail,
                   "command": initial.get("verification_cmd"), "skipped": skipped}
         if note:
             record["note"] = note
+        if analysis is not None:
+            record["failure_analysis"] = analysis
+            record["failure_summary"] = analysis["summary"]
 
         def apply(data: dict) -> bool:
             task = next((t for t in data["tasks"] if t["id"] == task_id), None)
@@ -107,12 +117,17 @@ def verify_task(
                     task["retry_count"] = task.get("retry_count", 0) + 1
                     task.setdefault("verification_failures", []).append(tail)
                     task["last_error"] = f"Verification failed ({code})\n{tail}"
+                    task["failure_analysis"] = analysis
+                    task["failure_summary"] = analysis["summary"]
+                else:
+                    task.pop("failure_analysis", None)
+                    task.pop("failure_summary", None)
             return True
 
         if not roadmap_store.update_roadmap(path, apply):
             return VerificationResult("cancelled", code, tail, "Task changed during verification")
         return VerificationResult("skipped" if skipped else "verified" if code == 0 else "failed",
-                                  code, tail, note)
+                                  code, tail, note, analysis)
 
 
 def main() -> None:

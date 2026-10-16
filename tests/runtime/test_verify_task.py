@@ -100,6 +100,30 @@ class VerificationTests(unittest.TestCase):
         self.assertLessEqual(len(record["log_tail"]), verifier.LOG_LIMIT)
         self.assertTrue(record["log_tail"].endswith("THE END"))
 
+    def test_stderr_is_analyzed_before_log_tail_truncation(self):
+        program = ("import sys; "
+                   "sys.stderr.write('src/worker.ts(12,5): error TS2322: Type mismatch\\n' + 'noise\\n' * 1000); "
+                   "sys.exit(1)")
+        self.change(verification_cmd=shlex.join([sys.executable, "-c", program]))
+        result = self.verify()
+        self.assertNotIn("TS2322", result.log_tail)
+        analysis = result.failure_analysis
+        self.assertIn("TS2322", analysis["summary"])
+        self.assertEqual(analysis["implicated_files"], ["src/worker.ts"])
+        self.assertEqual(analysis["command"], self.latest()["verification_cmd"])
+        self.assertEqual(self.latest()["failure_analysis"], analysis)
+        self.assertEqual(self.latest()["verifications"][0]["failure_analysis"], analysis)
+
+    def test_success_clears_live_reflection_and_preserves_failure_history(self):
+        self.change(verification_cmd="echo 'Error: broken' >&2; exit 1")
+        self.verify()
+        self.change(verification_cmd="true")
+        result = self.verify()
+        self.assertIsNone(result.failure_analysis)
+        self.assertNotIn("failure_analysis", self.latest())
+        self.assertNotIn("failure_summary", self.latest())
+        self.assertIn("Error: broken", self.latest()["verifications"][0]["failure_analysis"]["summary"])
+
     def test_missing_command_is_explicitly_skipped_without_changing_status_or_retry(self):
         for command in (None, "", "  ", 123):
             with self.subTest(command=command):

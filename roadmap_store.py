@@ -40,6 +40,14 @@ def save_roadmap(path: Path, snapshot: dict):
             if (task.get("closed_at") or task["id"] not in incoming or
                     task.get("build_approval") != incoming[task["id"]].get("build_approval")):
                 incoming[task["id"]] = task
+            else:
+                # These fields belong to the runtime/dashboard atomic writers.
+                # A bot's stale snapshot must never roll back spend or a budget.
+                for key in ("telemetry", "attempts", "active_attempt", "budget_cap_usd"):
+                    if key in task:
+                        incoming[task["id"]][key] = task[key]
+                    else:
+                        incoming[task["id"]].pop(key, None)
         latest.update(snapshot)
         latest["tasks"] = list(incoming.values())
         if receipts:

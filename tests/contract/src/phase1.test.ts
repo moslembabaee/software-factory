@@ -70,7 +70,9 @@ describe("Implemented OpenAPI route inventory", () => {
       expect(
         context.app.hasRoute({
           method: endpoint.method,
-          url: endpoint.url.replace("{id}", ":id").replace("{taskId}", ":taskId"),
+          url: endpoint.url
+            .replace("{id}", ":id")
+            .replace("{taskId}", ":taskId"),
         }),
       ).toBe(true);
     }
@@ -228,7 +230,10 @@ describe("Implemented HTTP contracts", () => {
         );
       }
       for (const [field, property] of Object.entries(schema.properties ?? {})) {
-        invalid.push({ ...valid, [field]: null });
+        // Nullable fields (for example, removing a task budget) legitimately
+        // accept null. Only generate values the field's contract rejects.
+        if (violations(property, null) !== null)
+          invalid.push({ ...valid, [field]: null });
         if (property.type === "string")
           invalid.push({ ...valid, [field]: 123 });
         if (property.type === "number" || property.type === "integer")

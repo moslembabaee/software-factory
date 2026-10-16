@@ -244,3 +244,71 @@ code {
     gap: 0;
   }
 }
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+}
+.metric-grid > div {
+  padding: 1rem;
+  background: #f1f5f9;
+  border-radius: 8px;
+}
+.metric-grid dt {
+  color: #334155;
+}
+.metric-grid dd {
+  margin: 0.4rem 0 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+.metrics-table-scroll {
+  overflow-x: auto;
+}
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.metrics-table caption {
+  text-align: left;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+.metrics-table th,
+.metrics-table td {
+  padding: 0.6rem;
+  border-bottom: 1px solid #cbd5e1;
+  white-space: nowrap;
+}
+.failure-modes {
+  list-style: none;
+  padding: 0;
+}
+.failure-modes li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 0.5rem 0;
+}
+.failure-modes meter {
+  flex: 1;
+  min-width: 100px;
+}
+.task-telemetry progress {
+  display: block;
+  width: 100%;
+  margin: 0.5rem 0;
+}
+.budget-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+.budget-control input {
+  min-width: 0;
+  width: 8rem;
+  padding: 0.5rem;
+}

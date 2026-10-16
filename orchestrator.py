@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import re
 import signal
 import time
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Callable, Literal
 
 import build_events
+import runtime_telemetry as telemetry
+import failure_analysis
 import roadmap_store
 import pr_lifecycle
 import roadmap_sync
@@ -31,6 +34,16 @@ from issue_lifecycle import (
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO = "moslembabaee/software-factory"
 AGENT_CHAIN = ("claude", "codex", "antigravity")
+
+AGENT_RATES = telemetry.AGENT_RATES
+
+ReflectionEngine = failure_analysis.ReflectionEngine
+FailureAnalysis = failure_analysis.FailureAnalysis
+FailureDiagnostic = failure_analysis.FailureDiagnostic
+analyze_failure = failure_analysis.analyze_failure
+synthesize_remediation_prompt = failure_analysis.synthesize_remediation_prompt
+generate_failure_summary = failure_analysis.generate_failure_summary
+reflection_engine = failure_analysis._default_engine
 
 
 @dataclass(frozen=True)
@@ -46,6 +59,17 @@ class RuntimeConfig:
     review_min_approvals: int = 2
     review_approval_threshold: float = 0.66
     poll_seconds: float = 5
+    default_budget_cap_usd: float | None = None
+    token_rates: dict[str, dict[str, float]] | None = None
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.agent_timeout) or self.agent_timeout <= 0:
+            raise ValueError("agent_timeout must be finite and positive")
+        telemetry.budget_cap({}, self.default_budget_cap_usd)
+        for rates in (self.token_rates or AGENT_RATES).values():
+            for key in ("prompt", "completion"):
+                if telemetry.nonnegative(rates.get(key), None) is None:
+                    raise ValueError("Token rates must be finite and nonnegative")
 
     @property
     def roadmap_file(self) -> Path:
@@ -63,8 +87,22 @@ class Attempt:
     timestamp: str
     exit_code: int
     verification_exit_code: int | None
-    failure: Literal["quota", "agent", "verification"] | None
+    failure: Literal["quota", "agent", "verification", "budget_exceeded", "timeout", "runtime"] | None
     log_tail: str
+    duration_seconds: float = 0.0
+    tokens: dict | None = None
+    cost_usd: float = 0.0
+    estimated_tokens: bool = False
+    agent_duration_seconds: float = 0.0
+    verification_duration_seconds: float = 0.0
+
+
+def extract_or_estimate_tokens(agent: str, prompt: str, output: str) -> dict[str, int]:
+    return telemetry.token_usage(prompt, output)[0]
+
+
+def calculate_token_cost(agent: str, prompt_tokens: int, completion_tokens: int) -> float:
+    return telemetry.token_cost(agent, {"prompt": prompt_tokens, "completion": completion_tokens})
 
 
 def timestamp() -> str:
@@ -114,7 +152,10 @@ def quota_error(output: str) -> bool:
     ))
 
 
-def build_prompt(task: dict, config: RuntimeConfig, feedback: str | None = None) -> str:
+def build_prompt(
+    task: dict, config: RuntimeConfig, feedback: str | FailureAnalysis | None = None,
+    *, agent: str | None = None,
+) -> str:
     prompt = f"""We are building 'Software Factory', an autonomous software generation platform.
 Project directory: {config.project_root}
 Repository: {config.repo}
@@ -128,8 +169,15 @@ Follow existing patterns: Fastify API, TypeScript strict, PostgreSQL with RLS.
 Verify with: {task['verification_cmd']}
 Leave Git commits, pushes, and roadmap lifecycle updates to the orchestrator.
 """
-    if feedback:
+    if isinstance(feedback, FailureAnalysis):
+        prompt += "\n" + reflection_engine.synthesize_remediation(task, feedback, agent) + "\n"
+    elif feedback:
         prompt += f"\nPrevious attempt failed. Fix any implementation failure below.\n{feedback[-4000:]}\n"
+    elif task.get("failure_analysis"):
+        analysis = (FailureAnalysis.from_dict(task["failure_analysis"])
+                    if isinstance(task["failure_analysis"], dict)
+                    else task["failure_analysis"])
+        prompt += "\n" + reflection_engine.synthesize_remediation(task, analysis, agent) + "\n"
     if task.get("regression_context"):
         ctx = task["regression_context"]
         prompt += (f"\nRepair the existing PR on branch {task.get('target_branch', '')} "
@@ -250,8 +298,12 @@ class AgentRuntime:
         def apply(task: dict, data: dict) -> None:
             task.update(fields)
             task["status"] = status
+            task.pop("active_attempt", None)
+            if status == "completed":
+                task.pop("failure_analysis", None)
+                task.pop("failure_summary", None)
             data["current_task_id"] = None
-        return self.update(task_id, apply, ("in_progress", "verified"))
+        return self.update(task_id, apply, ("in_progress", "ready_for_verification", "verified"))
 
     def publish(self, task: dict) -> tuple[bool, str]:
         success, result = pr_lifecycle.run_pr_lifecycle_for_verified_task(
@@ -308,48 +360,136 @@ class AgentRuntime:
                     return "failed"
         feedback = None
         for agent in agent_order(task.get("assigned_agent", "claude")):
-            if not self.update(task_id, lambda _task, _data: None):
+            blocked = False
+
+            def dispatch(current: dict, _data: dict) -> None:
+                nonlocal blocked
+                current["telemetry"] = telemetry.task_telemetry(current, self.config.default_budget_cap_usd)
+                blocked = current["telemetry"]["budget"]["exceeded"]
+                if not blocked:
+                    current["active_attempt"] = {"agent": agent, "phase": "agent", "started_at": timestamp()}
+
+            if not self.update(task_id, dispatch):
                 return "cancelled"
+            if blocked:
+                self.finish(task_id, "failed", last_error="Budget limit reached; dispatch refused")
+                return "failed"
             log(self.config, f"Dispatching {task_id} to {agent}", task_id)
-            code, output = execute_agent_task(agent, build_prompt(task, self.config, feedback), self.config)
-            failure = "quota" if quota_error(output) else ("agent" if code else None)
+            prompt = build_prompt(task, self.config, feedback, agent=agent)
+            started = time.monotonic()
+            try:
+                code, output = execute_agent_task(agent, prompt, self.config)
+            except Exception as error:
+                code, output = -2, f"Runtime error: {error}"
+                failure = "runtime"
+            else:
+                failure = ("timeout" if code == -1 else "quota" if quota_error(output)
+                           else "agent" if code else None)
+            agent_duration = time.monotonic() - started
+            tokens, estimated = telemetry.token_usage(prompt, output)
+            if code == -2:  # Spawn/runtime failure did not reach the provider.
+                tokens, estimated = {"prompt": 0, "completion": 0, "total": 0}, False
+            cost = telemetry.token_cost(agent, tokens, self.config.token_rates)
             verify_code = None
-            if not self.update(task_id, lambda _task, _data: None,
-                               ("in_progress", "ready_for_verification")):
-                return "cancelled"
-            if failure is None:
-                log(self.config, f"Verifying {task_id}: {verification}", task_id)
-                def ready(current: dict, _data: dict) -> None:
-                    current["status"] = "ready_for_verification"
-                if not self.update(task_id, ready, ("in_progress", "ready_for_verification")):
-                    return "cancelled"
-                result = verify_task.verify_task(
-                    task_id, self.config.project_root,
-                    timeout=self.config.verification_timeout, runner=run_cmd,
-                )
-                if result.outcome not in {"verified", "failed"}:
-                    return result.outcome
-                verify_code, output = result.exit_code, result.log_tail
-                if result.outcome == "failed":
-                    failure = "verification"
-            attempt = Attempt(agent, timestamp(), code, verify_code, failure, output[-4000:])
+            verify_duration = 0.0
+            verification_outcome = None
+            analysis = reflection_engine.analyze(code, output) if failure else None
+            # Record provider spend before verification so snapshots and budgets
+            # reflect it while verification runs, including a later crash/restart.
+            attempt = Attempt(agent, timestamp(), code, None, failure, output[-4000:],
+                              round(agent_duration, 3), tokens, cost, estimated,
+                              round(agent_duration, 3), 0.0)
+            index = 0
+            budget_reached = False
 
             def record(current: dict, _data: dict) -> None:
-                current.setdefault("attempts", []).append(asdict(attempt))
+                nonlocal index, budget_reached
+                telemetry.record_attempt(current, asdict(attempt), self.config.default_budget_cap_usd)
+                index = len(current["attempts"]) - 1
+                budget_reached = current["telemetry"]["budget"]["exceeded"]
+                current.pop("active_attempt", None)
                 if failure:
-                    # Verification failures already incremented in the executor.
-                    if failure != "verification":
-                        current["retry_count"] = current.get("retry_count", 0) + 1
+                    current["status"] = "in_progress"
+                    current["retry_count"] = current.get("retry_count", 0) + 1
                     current["last_error"] = f"{agent}: {failure}\n{output[-4000:]}"
+                    current["failure_analysis"] = analysis.to_dict()
+                    current["failure_summary"] = analysis.summary
+                    current["attempts"][index]["failure_analysis"] = analysis.to_dict()
+                    current["attempts"][index]["failure_summary"] = analysis.summary
+                elif not budget_reached:
+                    current["status"] = "ready_for_verification"
+                    current["active_attempt"] = {"agent": agent, "phase": "verification", "started_at": timestamp()}
 
-            if not self.update(task_id, record, ("in_progress", "verified")):
+            if not self.update(task_id, record, ("in_progress", "ready_for_verification")):
                 return "cancelled"
+            if not failure and not budget_reached:
+                log(self.config, f"Verifying {task_id}: {verification}", task_id)
+                started = time.monotonic()
+                try:
+                    result = verify_task.verify_task(task_id, self.config.project_root,
+                        timeout=self.config.verification_timeout, runner=run_cmd)
+                except Exception as error:
+                    result = verify_task.VerificationResult("failed", -2, f"Runtime error: {error}")
+                verify_duration = round(time.monotonic() - started, 3)
+                verification_outcome = result.outcome
+                verify_code, output = result.exit_code, result.log_tail
+                if result.outcome == "failed":
+                    failure = "timeout" if verify_code == -1 else "runtime" if verify_code == -2 else "verification"
+                    analysis = (FailureAnalysis.from_dict(result.failure_analysis)
+                                if result.failure_analysis else
+                                reflection_engine.analyze(verify_code, output, verification))
+
+            def finalize(current: dict, _data: dict) -> None:
+                nonlocal budget_reached
+                row = current["attempts"][index]
+                row.update(verification_exit_code=verify_code, failure=failure,
+                    verification_duration_seconds=verify_duration,
+                    duration_seconds=round(agent_duration + verify_duration, 3), log_tail=output[-4000:])
+                stats = current["telemetry"]
+                stats["duration_seconds"] = round(stats["duration_seconds"] + verify_duration, 3)
+                stats["verification_duration_seconds"] = round(stats["verification_duration_seconds"] + verify_duration, 3)
+                stats["budget"]["cap_usd"] = telemetry.budget_cap(current, self.config.default_budget_cap_usd)
+                current["telemetry"] = telemetry.task_telemetry(current, self.config.default_budget_cap_usd)
+                budget_reached = current["telemetry"]["budget"]["exceeded"]
+                if failure and attempt.failure is None:
+                    modes = current["telemetry"]["failure_modes"]
+                    modes[failure] = modes.get(failure, 0) + 1
+                if budget_reached:
+                    modes = current["telemetry"]["failure_modes"]
+                    modes["budget_exceeded"] = modes.get("budget_exceeded", 0) + 1
+                    if not failure:
+                        row["failure"] = "budget_exceeded"
+                        current["telemetry"]["failed_attempts"] += 1
+                if failure:
+                    current["failure_analysis"] = analysis.to_dict()
+                    current["failure_summary"] = analysis.summary
+                    row["failure_analysis"] = analysis.to_dict()
+                    row["failure_summary"] = analysis.summary
+                else:
+                    current.pop("failure_analysis", None)
+                    current.pop("failure_summary", None)
+                current.pop("active_attempt", None)
+
+            if not self.update(task_id, finalize, ("in_progress", "ready_for_verification", "verified")):
+                return "cancelled"
+            log(self.config, f"{task_id} telemetry: {tokens['total']} tokens (${cost:.6f} estimated cost), "
+                f"latency {agent_duration + verify_duration:.2f}s", task_id)
+            if budget_reached:
+                self.finish(task_id, "failed", last_error="Budget limit reached; further execution refused")
+                return "failed"
+            if verification_outcome and verification_outcome not in {"verified", "failed"}:
+                return verification_outcome
             if failure:
-                feedback = f"{agent}: {failure}\n{output[-4000:]}"
+                if failure == "verification" or verify_code is not None:
+                    feedback = analysis
+                else:
+                    feedback = f"{agent}: {failure}\n{output[-4000:]}"
                 log(self.config, f"{task_id}: {agent} failed ({failure}); advancing failover chain", task_id)
                 continue
-            if not self.update(task_id, lambda current, _data: current.update(
-                    completed_agent=agent, last_error=None), ("verified",)):
+            if not self.update(task_id, lambda current, _data: (
+                    current.update(completed_agent=agent, last_error=None),
+                    current.pop("failure_analysis", None),
+                    current.pop("failure_summary", None)), ("verified",)):
                 return "cancelled"
             return self.publish_verified(task)
         self.finish(task_id, "failed")
@@ -423,10 +563,15 @@ def main() -> None:
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch", default="main")
+    parser.add_argument("--agent-timeout", type=float, default=720)
+    parser.add_argument("--budget-cap-usd", type=float, default=None)
+    parser.add_argument("--token-rates-json", type=json.loads, default=None,
+                        help="Agent prompt/completion USD rates per million tokens")
     args = parser.parse_args()
     runtime = AgentRuntime(RuntimeConfig(
         project_root=args.project_root.resolve(), repo=args.repo,
-        remote=args.remote, branch=args.branch,
+        remote=args.remote, branch=args.branch, agent_timeout=args.agent_timeout,
+        default_budget_cap_usd=args.budget_cap_usd, token_rates=args.token_rates_json,
     ))
     def stop(_signum: int, _frame: object) -> None:
         # Let run_cmd terminate its active process group before exiting.

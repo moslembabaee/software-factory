@@ -48,6 +48,7 @@ const rows: Record<string, Record<string, unknown>> = {
   relations: { kind: "depends_on", from_ref: resourceId, to_ref: actorId },
 };
 export const payloads: Record<string, Record<string, unknown>> = {
+  updateBuildBudget: { revision: "a".repeat(64), budget_cap_usd: 5 },
   approveBuildTask: { revision: "a".repeat(64) },
   previewAskPlan: { description: "Build a dashboard" },
   acceptAskPlan: { description: "Build a dashboard", accepted: true },
@@ -149,6 +150,8 @@ export async function fixture(authenticated = true) {
   const app: FastifyInstance = buildApp({
     database,
     buildRoadmap: {
+      setBudget: () =>
+        Promise.resolve({ tasks: [], current_task_id: null, logs: [] }),
       snapshot: () =>
         Promise.resolve({ tasks: [], current_task_id: null, logs: [] }),
       approve: () =>

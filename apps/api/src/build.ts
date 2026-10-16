@@ -5,6 +5,8 @@ import { z } from "zod";
 import {
   BuildSnapshotSchema,
   BuildApprovalSchema,
+  BuildBudgetUpdateSchema,
+  type BuildBudgetUpdate,
 } from "@software-factory/factory-core";
 import type { Scoped } from "./core.js";
 import type { BuildRoadmap } from "./build-roadmap.js";
@@ -44,6 +46,19 @@ export function registerBuildRoutes(
     const identity = await requireProject(request);
     return roadmap.snapshot(identity, (request.params as { id: string }).id);
   };
+  const taskParams = {
+    ...idParams,
+    required: ["id", "taskId"],
+    properties: {
+      ...idParams.properties,
+      taskId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+        pattern: "^[A-Za-z0-9_-]+$",
+      },
+    },
+  };
 
   app.get(
     "/projects/:id/build",
@@ -61,19 +76,7 @@ export function registerBuildRoutes(
     "/projects/:id/build/tasks/:taskId/approve",
     {
       schema: responseSchema(200, jsonSchema(BuildSnapshotSchema), {
-        params: {
-          ...idParams,
-          required: ["id", "taskId"],
-          properties: {
-            ...idParams.properties,
-            taskId: {
-              type: "string",
-              minLength: 1,
-              maxLength: 128,
-              pattern: "^[A-Za-z0-9_-]+$",
-            },
-          },
-        },
+        params: taskParams,
         body: jsonSchema(BuildApprovalSchema),
       }),
     },
@@ -84,6 +87,28 @@ export function registerBuildRoutes(
         request.params.id,
         request.params.taskId,
         request.body.revision,
+      );
+    },
+  );
+
+  app.patch<{
+    Params: { id: string; taskId: string };
+    Body: BuildBudgetUpdate;
+  }>(
+    "/projects/:id/build/tasks/:taskId/budget",
+    {
+      schema: responseSchema(200, jsonSchema(BuildSnapshotSchema), {
+        params: taskParams,
+        body: jsonSchema(BuildBudgetUpdateSchema),
+      }),
+    },
+    async (request) => {
+      const identity = await requireProject(request);
+      return roadmap.setBudget(
+        identity,
+        request.params.id,
+        request.params.taskId,
+        request.body,
       );
     },
   );

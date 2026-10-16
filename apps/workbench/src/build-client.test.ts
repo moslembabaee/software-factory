@@ -10,6 +10,7 @@ import {
   BuildDashboard,
   BuildProgress,
   BuildTaskCard,
+  BuildMetricsPanel,
 } from "./BuildDashboard.js";
 import { Workbench } from "./Workbench.js";
 import { createBuildClient, type BuildEventSource } from "./build-client.js";
@@ -42,6 +43,107 @@ class MockStream extends EventTarget implements BuildEventSource {
 }
 
 describe("Build workbench", () => {
+  it("renders costs, latency, failure charts and budget exhaustion accessibly", () => {
+    const markup = renderToStaticMarkup(
+      createElement(BuildMetricsPanel, {
+        metrics: {
+          total_tokens: 1200,
+          total_cost_usd: 0.006,
+          avg_latency_seconds: 2.5,
+          attempt_count: 2,
+          retry_rate: 0.5,
+          failure_modes: { timeout: 1 },
+          budget: {
+            total_cap_usd: 0.005,
+            total_spent_usd: 0.006,
+            exceeded: true,
+          },
+          agents: [
+            {
+              agent: "codex",
+              attempt_count: 2,
+              failed_attempts: 1,
+              total_tokens: 1200,
+              total_cost_usd: 0.006,
+              avg_latency_seconds: 2.5,
+              retry_rate: 0.5,
+              failure_modes: { timeout: 1 },
+            },
+          ],
+        },
+      }),
+    );
+    expect(markup).toContain("$0.006000");
+    expect(markup).toContain("2.50s");
+    expect(markup).toContain("50.0%");
+    expect(markup).toContain('aria-label="timeout failures"');
+    expect(markup).toContain("Agent performance");
+    expect(markup).toContain("A task has reached its budget limit.");
+    const card = renderToStaticMarkup(
+      createElement(BuildTaskCard, {
+        task: {
+          ...task,
+          status: "in_progress",
+          budget_cap_usd: 0,
+          active_attempt: {
+            agent: "codex",
+            phase: "agent",
+            started_at: "2026-10-16T00:00:00Z",
+            elapsed_seconds: 5,
+          },
+          telemetry: {
+            tokens: { prompt: 1000, completion: 200, total: 1200 },
+            cost_usd: 0.006,
+            estimated_tokens: true,
+            duration_seconds: 2.5,
+            agent_duration_seconds: 2,
+            verification_duration_seconds: 0.5,
+            attempt_count: 2,
+            failed_attempts: 1,
+            retry_rate: 0.5,
+            failure_modes: { timeout: 1 },
+            budget: { cap_usd: 0, spent_usd: 0.006, exceeded: true },
+          },
+        },
+        busy: false,
+        onApprove: vi.fn(),
+        onSetBudget: vi.fn(),
+      }),
+    );
+    expect(card).toContain("(estimated)");
+    expect(card).toContain("Budget limit reached");
+    expect(card).toContain("Running codex: agent");
+    expect(card).toContain('max="1" value="1"');
+    expect(card).toContain("Save budget");
+  });
+
+  it("sends budget decisions with the task revision and supports removing the limit", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify(snapshot))),
+      );
+    const client = createBuildClient(transport);
+    for (const cap of [0, null, 0.005]) {
+      await client.setBudget("project/one", "T/1", {
+        revision: task.revision,
+        budget_cap_usd: cap,
+      });
+      expect(transport).toHaveBeenLastCalledWith(
+        "/api/v1/projects/project%2Fone/build/tasks/T%2F1/budget",
+        {
+          method: "PATCH",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            revision: task.revision,
+            budget_cap_usd: cap,
+          }),
+        },
+      );
+    }
+  });
+
   it("renders accessible progress, task decisions and safely escaped issue context", () => {
     const markup = renderToStaticMarkup(
       createElement(BuildTaskCard, { task, busy: false, onApprove: vi.fn() }),

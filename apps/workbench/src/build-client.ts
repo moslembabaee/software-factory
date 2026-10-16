@@ -1,11 +1,17 @@
 import {
   BuildSnapshotSchema,
   type BuildSnapshot,
+  type BuildBudgetUpdate,
 } from "@software-factory/factory-core";
 
 export type BuildConnection =
   "connecting" | "live" | "reconnecting" | "offline";
 export interface BuildClient {
+  setBudget(
+    projectId: string,
+    taskId: string,
+    update: BuildBudgetUpdate,
+  ): Promise<BuildSnapshot>;
   read(projectId: string, signal?: AbortSignal): Promise<BuildSnapshot>;
   approve(
     projectId: string,
@@ -48,6 +54,12 @@ export function createBuildClient(
     return BuildSnapshotSchema.parse(await response.json());
   }
   return {
+    setBudget: (project, task, update) =>
+      request(`${path(project)}/tasks/${encodeURIComponent(task)}/budget`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(update),
+      }),
     read: (project, signal) =>
       request(path(project), { ...(signal ? { signal } : {}) }),
     approve: (project, task, revision) =>

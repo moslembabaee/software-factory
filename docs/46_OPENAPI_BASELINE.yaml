@@ -69,6 +69,34 @@ paths:
       responses:
         '200': *ref_1
         default: *ref_2
+  /projects/{id}/build/tasks/{taskId}/budget:
+    patch:
+      operationId: updateBuildBudget
+      x-phase: 4
+      description: >-
+        Update a task budget at the supplied revision. Null removes the limit;
+        zero blocks dispatch. Costs use configured rates and may use estimated
+        tokens. Limits are enforced between provider invocations, including
+        failover. Existing spend survives approval and restart.
+      parameters:
+        - *ref_0
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: ^[A-Za-z0-9_-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildBudgetUpdate'
+      responses:
+        '200': *ref_1
+        default: *ref_2
   /projects/{id}/build/stream:
     get:
       operationId: streamBuildDashboard
@@ -1573,6 +1601,145 @@ components:
                 type:
                   - string
                   - 'null'
+              budget_cap_usd:
+                anyOf:
+                  - type: number
+                    minimum: 0
+                  - type: 'null'
+              telemetry:
+                type: object
+                properties:
+                  tokens:
+                    type: object
+                    properties:
+                      prompt:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      completion:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      total:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                    required:
+                      - prompt
+                      - completion
+                      - total
+                    additionalProperties: false
+                  cost_usd:
+                    type: number
+                    minimum: 0
+                  duration_seconds:
+                    type: number
+                    minimum: 0
+                  agent_duration_seconds:
+                    type: number
+                    minimum: 0
+                  verification_duration_seconds:
+                    type: number
+                    minimum: 0
+                  estimated_tokens:
+                    type: boolean
+                  attempt_count:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  failed_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  retry_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  failure_modes:
+                    type: object
+                    properties:
+                      quota:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      agent:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      verification:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      budget_exceeded:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      timeout:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      runtime:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                    additionalProperties: false
+                  budget:
+                    type: object
+                    properties:
+                      cap_usd:
+                        anyOf:
+                          - type: number
+                            minimum: 0
+                          - type: 'null'
+                      spent_usd:
+                        type: number
+                        minimum: 0
+                      exceeded:
+                        type: boolean
+                    required:
+                      - cap_usd
+                      - spent_usd
+                      - exceeded
+                    additionalProperties: false
+                required:
+                  - tokens
+                  - cost_usd
+                  - duration_seconds
+                  - agent_duration_seconds
+                  - verification_duration_seconds
+                  - estimated_tokens
+                  - attempt_count
+                  - failed_attempts
+                  - retry_rate
+                  - failure_modes
+                  - budget
+                additionalProperties: false
+              active_attempt:
+                anyOf:
+                  - type: object
+                    properties:
+                      agent:
+                        type: string
+                      phase:
+                        type: string
+                        enum:
+                          - agent
+                          - verification
+                      started_at:
+                        type: string
+                        format: date-time
+                        pattern: >-
+                          ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+                      elapsed_seconds:
+                        type: number
+                        minimum: 0
+                    required:
+                      - agent
+                      - phase
+                      - started_at
+                      - elapsed_seconds
+                    additionalProperties: false
+                  - type: 'null'
             required:
               - id
               - title
@@ -1621,10 +1788,169 @@ components:
               - timestamp
               - message
             additionalProperties: false
+        metrics:
+          type: object
+          properties:
+            attempt_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            total_tokens:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            total_cost_usd:
+              type: number
+              minimum: 0
+            avg_latency_seconds:
+              type: number
+              minimum: 0
+            retry_rate:
+              type: number
+              minimum: 0
+              maximum: 1
+            failure_modes:
+              type: object
+              properties:
+                quota:
+                  type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                agent:
+                  type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                verification:
+                  type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                budget_exceeded:
+                  type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                timeout:
+                  type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                runtime:
+                  type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+              additionalProperties: false
+            agents:
+              type: array
+              items:
+                type: object
+                properties:
+                  agent:
+                    type: string
+                  attempt_count:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  failed_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  total_tokens:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  total_cost_usd:
+                    type: number
+                    minimum: 0
+                  avg_latency_seconds:
+                    type: number
+                    minimum: 0
+                  retry_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  failure_modes:
+                    type: object
+                    properties:
+                      quota:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      agent:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      verification:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      budget_exceeded:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      timeout:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      runtime:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                    additionalProperties: false
+                required:
+                  - agent
+                  - attempt_count
+                  - failed_attempts
+                  - total_tokens
+                  - total_cost_usd
+                  - avg_latency_seconds
+                  - retry_rate
+                  - failure_modes
+                additionalProperties: false
+            budget:
+              type: object
+              properties:
+                total_cap_usd:
+                  anyOf:
+                    - type: number
+                      minimum: 0
+                    - type: 'null'
+                total_spent_usd:
+                  type: number
+                  minimum: 0
+                exceeded:
+                  type: boolean
+              required:
+                - total_cap_usd
+                - total_spent_usd
+                - exceeded
+              additionalProperties: false
+          required:
+            - attempt_count
+            - total_tokens
+            - total_cost_usd
+            - avg_latency_seconds
+            - retry_rate
+            - failure_modes
+            - agents
+            - budget
+          additionalProperties: false
       required:
         - tasks
         - current_task_id
         - logs
+      additionalProperties: false
+    BuildBudgetUpdate:
+      type: object
+      properties:
+        revision:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        budget_cap_usd:
+          anyOf:
+            - type: number
+              minimum: 0
+            - type: 'null'
+      required:
+        - revision
+        - budget_cap_usd
       additionalProperties: false
     Work:
       type: object

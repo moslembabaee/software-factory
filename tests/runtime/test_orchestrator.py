@@ -111,6 +111,83 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(attempts[0]["verification_exit_code"])
         self.assertEqual(self.latest()["retry_count"], 1)
 
+    def test_timeout_has_distinct_metrics_and_failover_keeps_cumulative_usage(self):
+        self.set_task(retry_count=20)
+        outputs = [(-1, 'Command timed out after 720 seconds\n{"usage":{"input_tokens":1000,"output_tokens":200}}'),
+                   (0, '{"usage":{"input_tokens":2000,"output_tokens":300}}')]
+        with patch.object(runtime, "execute_agent_task", side_effect=outputs):
+            self.assertEqual(self.worker.run_once(), "completed")
+        task = self.latest()
+        stats = task["telemetry"]
+        self.assertEqual(task["attempts"][0]["failure"], "timeout")
+        self.assertEqual(stats["tokens"], {"prompt": 3000, "completion": 500, "total": 3500})
+        self.assertAlmostEqual(stats["cost_usd"], .006 + .008)
+        self.assertEqual(stats["failure_modes"], {"timeout": 1})
+        self.assertEqual(stats["retry_rate"], .5)
+        self.assertEqual(stats["failed_attempts"], 1)
+        self.assertFalse(stats["estimated_tokens"])
+        self.assertGreaterEqual(stats["duration_seconds"], stats["verification_duration_seconds"])
+        self.assertNotIn("active_attempt", task)
+
+    def test_snapshot_shows_running_agent_then_spend_during_verification(self):
+        import build_dashboard
+        self.set_task(tenant_id="tenant", project_id="project")
+        def agent(*_args):
+            snap = build_dashboard.snapshot(self.config.roadmap_file, {"tenantId": "tenant"}, "project")
+            self.assertEqual(snap["tasks"][0]["active_attempt"]["agent"], "claude")
+            self.assertEqual(snap["tasks"][0]["active_attempt"]["phase"], "agent")
+            return 0, '{"input_tokens":1000,"output_tokens":200}'
+        original = runtime.verify_task.verify_task
+        def verify(*args, **kwargs):
+            current = self.latest()
+            self.assertEqual(current["telemetry"]["tokens"]["total"], 1200)
+            self.assertEqual(current["active_attempt"]["phase"], "verification")
+            return original(*args, **kwargs)
+        with patch.object(runtime, "execute_agent_task", side_effect=agent), \
+                patch.object(runtime.verify_task, "verify_task", side_effect=verify):
+            self.assertEqual(self.worker.run_once(), "completed")
+
+    def test_zero_budget_blocks_provider_dispatch(self):
+        self.set_task(budget_cap_usd=0)
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+        agent.assert_not_called()
+        self.assertTrue(self.latest()["telemetry"]["budget"]["exceeded"])
+        self.assertIsNone(self.data()["current_task_id"])
+
+    def test_budget_stops_verification_and_failover_after_spend_reaches_cap(self):
+        self.set_task(budget_cap_usd=.006)
+        with patch.object(runtime, "execute_agent_task", return_value=(0, '{"input_tokens":1000,"output_tokens":200}')) as agent, \
+                patch.object(runtime.verify_task, "verify_task") as verify:
+            self.assertEqual(self.worker.run_once(), "failed")
+        agent.assert_called_once()
+        verify.assert_not_called()
+        self.assertEqual(self.latest()["telemetry"]["cost_usd"], .006)
+        self.assertEqual(self.latest()["telemetry"]["failure_modes"], {"budget_exceeded": 1})
+        # Restart and approval never reset spend.
+        self.set_task(status="approved", retry_count=0)
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(runtime.AgentRuntime(self.config).run_once(), "failed")
+        agent.assert_not_called()
+
+    def test_budget_lowered_during_agent_is_enforced_against_live_state(self):
+        self.set_task(budget_cap_usd=1)
+        def agent(*_args):
+            self.set_task(budget_cap_usd=.001)
+            return 1, '{"input_tokens":1000,"output_tokens":200}'
+        with patch.object(runtime, "execute_agent_task", side_effect=agent) as execute:
+            self.assertEqual(self.worker.run_once(), "failed")
+        execute.assert_called_once()
+        self.assertEqual(self.latest()["telemetry"]["budget"]["cap_usd"], .001)
+
+    def test_verification_failure_metrics_are_counted_once(self):
+        self.set_task(verification_cmd="exit 1")
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")):
+            self.assertEqual(self.worker.run_once(), "failed")
+        self.assertEqual(self.latest()["retry_count"], 3)
+        self.assertEqual(self.latest()["telemetry"]["failure_modes"], {"verification": 3})
+        self.assertEqual(self.latest()["telemetry"]["retry_rate"], .6667)
+
     def test_provider_errors_skip_verification_and_exhaust_chain_once(self):
         with patch.object(runtime, "execute_agent_task", return_value=(429, "quota")) as agent, \
                 patch.object(runtime, "run_cmd") as command:
@@ -152,6 +229,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.latest()["pr_status"], "merged")
         self.assertIsNone(self.data()["current_task_id"])
         self.assertEqual(self.worker.run_once(), "idle")
+
+    def test_reflection_drives_retry_with_structured_stderr_diagnostics(self):
+        command = "echo 'src/service.ts(9,3): error TS2322: Wrong return type' >&2; exit 1"
+        self.set_task(verification_cmd=command)
+        calls = []
+
+        def agent(name, prompt, _config):
+            calls.append((name, prompt))
+            if len(calls) == 2:
+                analysis = self.latest()["failure_analysis"]
+                self.assertEqual(analysis["command"], command)
+                self.assertEqual(analysis["parsed_diagnostics"][0]["symbol"], "TS2322")
+                self.set_task(verification_cmd="true")
+            return 0, "done"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent):
+            self.assertEqual(self.worker.run_once(), "completed")
+        self.assertEqual([name for name, _prompt in calls], ["claude", "codex"])
+        self.assertIn("Remediation Prompt for codex", calls[1][1])
+        self.assertIn("TS2322", calls[1][1])
+        self.assertIn("src/service.ts", calls[1][1])
+        self.assertIn("Run the full verification command", calls[1][1])
+        self.assertNotIn("failure_analysis", self.latest())
+        self.assertIn("TS2322", self.latest()["attempts"][0]["failure_summary"])
+
+    def test_ready_failure_persists_reflection_without_current_task_claim(self):
+        self.set_task(status="ready_for_verification", verification_cmd="echo 'Error: regression' >&2; exit 1")
+        with patch.object(runtime, "execute_agent_task") as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+        agent.assert_not_called()
+        self.assertIn("regression", self.latest()["failure_summary"])
+        # A later approval resumes from stored diagnostics, addressed to its assignee.
+        task = self.latest()
+        prompt = runtime.build_prompt(task, self.config, agent="antigravity")
+        self.assertIn("Remediation Prompt for antigravity", prompt)
+        self.assertIn("regression", prompt)
 
     def test_pending_pr_is_polled_without_dispatching_or_verifying_again(self):
         self.github.ci = []
@@ -232,6 +345,10 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(self.worker.run_once(), "failed")
         self.assertEqual(self.latest()["retry_count"], 3)
         self.assertTrue(all(a["verification_exit_code"] == -1 for a in self.latest()["attempts"]))
+        analysis = self.latest()["failure_analysis"]
+        self.assertEqual(analysis["command"], self.latest()["verification_cmd"])
+        self.assertIn("timed out", analysis["summary"])
+        self.assertIn("deadlocks", analysis["remediation_hint"])
 
     def test_missing_or_blank_verification_never_dispatches(self):
         for value in (None, "", "  "):

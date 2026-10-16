@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 import build_dashboard
@@ -31,6 +32,20 @@ class BuildDashboardTests(unittest.TestCase):
         self.assertEqual(saved["status"], "approved")
         self.assertEqual(saved["build_approval"]["actor_id"], "actor")
 
+    def test_stale_bot_snapshot_cannot_roll_back_spend_or_budget(self):
+        stale = json.loads(self.path.read_text())
+        self.assertEqual(build_dashboard.set_budget(self.path, self.identity, "project", self.task["id"],
+            build_dashboard.revision(self.task), 1), {})
+        def record(data):
+            data["tasks"][0].update(telemetry={"cost_usd": .5}, attempts=[{"agent": "codex"}])
+            return True
+        roadmap_store.update_roadmap(self.path, record)
+        roadmap_store.save_roadmap(self.path, stale)
+        saved = json.loads(self.path.read_text())["tasks"][0]
+        self.assertEqual(saved["budget_cap_usd"], 1)
+        self.assertEqual(saved["telemetry"]["cost_usd"], .5)
+        self.assertEqual(len(saved["attempts"]), 1)
+
     def test_webhook_approval_and_closure_appear_in_the_scoped_feed(self):
         with patch.object(webhook_server, "PROJECT_ROOT", self.root), \
                 patch.object(webhook_server, "ROADMAP_FILE", self.path), \
@@ -54,6 +69,26 @@ class BuildDashboardTests(unittest.TestCase):
         logs = build_dashboard.snapshot(self.path, self.identity, "project")["logs"]
         self.assertEqual([row["message"] for row in logs], ["Dispatching task"])
         self.assertEqual(logs[0]["source"], "orchestrator")
+
+    def test_live_elapsed_time_and_legacy_tasks_have_safe_metrics(self):
+        self.task.update(status="in_progress", active_attempt={"agent": "codex", "phase": "agent",
+            "started_at": (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()})
+        self.path.write_text(json.dumps({"tasks": [self.task], "current_task_id": self.task["id"]}))
+        result = build_dashboard.snapshot(self.path, self.identity, "project")
+        self.assertGreaterEqual(result["tasks"][0]["active_attempt"]["elapsed_seconds"], 10)
+        self.assertEqual(result["metrics"]["total_tokens"], 0)
+        self.assertEqual(result["metrics"]["avg_latency_seconds"], 0)
+        self.task.update(status="failed")
+        self.path.write_text(json.dumps({"tasks": [self.task]}))
+        self.assertIsNone(build_dashboard.snapshot(self.path, self.identity, "project")["tasks"][0]["active_attempt"])
+
+    def test_budget_bridge_refuses_nonfinite_values_without_mutating_roadmap(self):
+        before = self.path.read_text()
+        for cap in [float('nan'), float('inf'), -1, True]:
+            result = build_dashboard.set_budget(self.path, self.identity, "project", self.task["id"],
+                                               build_dashboard.revision(self.task), cap)
+            self.assertEqual(result, {"error": 400})
+        self.assertEqual(self.path.read_text(), before)
 
     def test_tail_is_bounded_filters_other_tasks_and_ignores_partial_records(self):
         self.assertEqual(build_events.tail(self.root, {self.task["id"]}), [])

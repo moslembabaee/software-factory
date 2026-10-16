@@ -100,6 +100,176 @@ const body = (response: { json(): unknown }) =>
   BuildSnapshotSchema.parse(response.json());
 
 describe("Build dashboard access and approvals", () => {
+  it("returns task and agent telemetry without including another tenant's spend or attempt output", async () => {
+    const { app, data, path } = await fixture();
+    const attempt = {
+      agent: "codex",
+      failure: "timeout",
+      tokens: { prompt: 100, completion: 20, total: 120 },
+      cost_usd: 0.001,
+      duration_seconds: 2,
+      log_tail: "Provider secret",
+    };
+    const telemetry = {
+      tokens: attempt.tokens,
+      cost_usd: 0.001,
+      duration_seconds: 2,
+      failure_modes: { timeout: 1 },
+    };
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...data,
+        tasks: [
+          { ...task, telemetry, attempts: [attempt], budget_cap_usd: 0.01 },
+          {
+            ...task,
+            id: "T-OTHER",
+            tenant_id: otherId,
+            telemetry: { ...telemetry, cost_usd: 99 },
+            attempts: [attempt],
+          },
+        ],
+      }),
+    );
+    const response = await app.inject(url);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(body(response)).toMatchObject({
+      tasks: [
+        {
+          telemetry: {
+            tokens: { total: 120 },
+            cost_usd: 0.001,
+            attempt_count: 1,
+          },
+        },
+      ],
+      metrics: {
+        total_cost_usd: 0.001,
+        total_tokens: 120,
+        avg_latency_seconds: 2,
+        retry_rate: 0,
+        failure_modes: { timeout: 1 },
+        agents: [
+          {
+            agent: "codex",
+            attempt_count: 1,
+            failed_attempts: 1,
+            total_tokens: 120,
+          },
+        ],
+      },
+    });
+    expect(response.body).not.toMatch(/Provider secret|log_tail|T-OTHER/);
+  });
+
+  it("updates budgets atomically, rejects stale decisions and can remove a cap", async () => {
+    const { app, roadmap, path } = await fixture();
+    const revision = (await roadmap.snapshot(identity, projectId)).tasks[0]
+      ?.revision;
+    const request = {
+      method: "PATCH" as const,
+      url: `${url}/tasks/${task.id}/budget`,
+      payload: { revision, budget_cap_usd: 0 },
+    };
+    const response = await app.inject(request);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(body(response).tasks[0]).toMatchObject({
+      budget_cap_usd: 0,
+      telemetry: { budget: { cap_usd: 0, exceeded: true } },
+    });
+    expect((await app.inject(request)).statusCode).toBe(409);
+    const removed = await app.inject({
+      ...request,
+      payload: {
+        revision: body(response).tasks[0]?.revision,
+        budget_cap_usd: null,
+      },
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(body(removed).tasks[0]?.telemetry?.budget.cap_usd).toBeNull();
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      custom: "preserved",
+      tasks: [{ budget_cap_usd: null }, {}, {}, {}],
+    });
+  });
+
+  it.each([-1, "1", true, null])(
+    "validates budget mutation input: %j",
+    async (value) => {
+      const { app, roadmap } = await fixture();
+      const setBudget = vi.spyOn(roadmap, "setBudget");
+      const payload =
+        value === null
+          ? { budget_cap_usd: 5 }
+          : { revision: "a".repeat(64), budget_cap_usd: value };
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `${url}/tasks/${task.id}/budget`,
+            payload,
+          })
+        ).statusCode,
+      ).toBe(422);
+      expect(setBudget).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires authentication and project access for budget changes", async () => {
+    const { app, roadmap } = await fixture(false);
+    const setBudget = vi.spyOn(roadmap, "setBudget");
+    const request = {
+      method: "PATCH" as const,
+      url: `${url}/tasks/${task.id}/budget`,
+      payload: { revision: "a".repeat(64), budget_cap_usd: 5 },
+    };
+    expect((await app.inject(request)).statusCode).toBe(401);
+    expect(setBudget).not.toHaveBeenCalled();
+    const allowed = await fixture();
+    const budget = vi.spyOn(allowed.roadmap, "setBudget");
+    allowed.query.mockImplementation((sql) =>
+      Promise.resolve({
+        rows: sql.includes("FROM projects") ? [] : [{ id: actorId }],
+      }),
+    );
+    expect((await allowed.app.inject(request)).statusCode).toBe(404);
+    expect(budget).not.toHaveBeenCalled();
+  });
+
+  it("hides foreign tasks and refuses budget changes to closed tasks", async () => {
+    const { app, roadmap, data, path } = await fixture();
+    for (const id of ["T-OTHER", "T-PROJECT", "T-LEGACY"]) {
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `${url}/tasks/${id}/budget`,
+            payload: { revision: "a".repeat(64), budget_cap_usd: 5 },
+          })
+        ).statusCode,
+      ).toBe(404);
+    }
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...data,
+        tasks: [{ ...task, closed_at: "2026-10-16T00:00:00Z" }],
+      }),
+    );
+    const revision = (await roadmap.snapshot(identity, projectId)).tasks[0]
+      ?.revision;
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `${url}/tasks/${task.id}/budget`,
+          payload: { revision, budget_cap_usd: 5 },
+        })
+      ).statusCode,
+    ).toBe(409);
+  });
+
   it("projects only tenant/project tasks, current task and scoped logs after RLS access checks", async () => {
     const { app, query, withTenant } = await fixture();
     const response = await app.inject(url);
@@ -318,7 +488,16 @@ describe("Build SSE transport", () => {
     const initial = await next();
     expect(initial).toContain("event: snapshot");
     expect(initial).toContain('"status":"pending"');
-    data.tasks[0] = { ...task, status: "in_progress" };
+    const running = {
+      ...task,
+      status: "in_progress",
+      active_attempt: {
+        agent: "codex",
+        phase: "agent",
+        started_at: new Date().toISOString(),
+      },
+    };
+    data.tasks[0] = running;
     data.current_task_id = task.id;
     await writeFile(path, JSON.stringify(data));
     const event = await next();
@@ -327,7 +506,13 @@ describe("Build SSE transport", () => {
     );
     expect(value).toMatchObject({
       current_task_id: task.id,
-      tasks: [{ status: "in_progress" }],
+      tasks: [
+        {
+          status: "in_progress",
+          active_attempt: { agent: "codex", phase: "agent" },
+        },
+      ],
+      metrics: { total_tokens: 0 },
     });
     query.mockResolvedValue({ rows: [] });
     expect(await next()).toBe("event: unavailable\ndata: {}\n\n");

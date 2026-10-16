@@ -123,6 +123,41 @@ Antigravity's `AGY_ERROR` with exit code zero), and failed verification advance
 to the next provider with bounded failure feedback. A provider quota requires
 that provider's quota to reset; it does not require an implementation repair.
 
+Verification failures are analyzed locally from the bounded, combined stdout and
+stderr capture before reducing the stored log tail. The reflection engine extracts
+TypeScript errors, test names, assertions, exceptions, stack traces and timeouts.
+Structured `failure_analysis` and `failure_summary` fields are saved on the task,
+verification record and failed attempt. The next provider receives a remediation
+prompt naming the failure, implicated files and full verification command. A later
+approval reuses saved diagnostics; successful verification clears the live summary
+while retaining failure history. Reflection uses no additional provider calls and
+preserves the existing one-attempt-per-provider retry limit and process deadlines.
+
+Runtime telemetry is persisted atomically with each task in the existing roadmap
+store. Per-attempt records track reported or estimated input/output tokens,
+estimated USD cost, agent and verification latency, and failure mode (including
+timeouts). Spend is recorded before verification and survives approval/restart.
+Retry rate is the number of attempts after a task's first attempt divided by all
+attempts; it does not depend on the resettable `retry_count` lifecycle field.
+
+Set `budget_cap_usd` on a task or `--budget-cap-usd` on the worker. Zero blocks
+dispatch; an explicit task value of null removes the limit. Caps are rechecked
+against live state before dispatch and after every invocation, preventing further
+verification/failover/publication once reached. A running invocation can overshoot
+its cap; this is not a provider-side billing limit. Token character estimates
+and default per-agent rates are approximate. Configure rates in USD per million
+tokens with `--token-rates-json '{"codex":{"prompt":2.5,"completion":10}}'`;
+use `--agent-timeout` to configure the existing 720-second process-group deadline.
+
+Build snapshots and the one-second SSE stream include task telemetry, active
+agent/verification elapsed time, project totals and per-agent metrics. Aggregation
+happens after tenant/project filtering, behind the existing PostgreSQL RLS project
+access check. The Build dashboard displays costs, latency, retry rates, failure
+bars and budget progress. `PATCH /api/v1/projects/:id/build/tasks/:taskId/budget`
+accepts `{ "revision": "<current revision>", "budget_cap_usd": 5 }` (or null)
+and rejects stale revisions and closed or inaccessible tasks. Attempt output is
+never included in the public telemetry payload.
+
 After an agent succeeds, the independent verification gate must pass before
 Git staging, commit and push. `pr_lifecycle.py` re-reads the task and requires a
 successful, non-skipped verification for its current command. It creates a task

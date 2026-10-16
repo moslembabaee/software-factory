@@ -53,6 +53,15 @@ class ReflectionTests(unittest.TestCase):
         self.assertIn("Error: missing dependency", analysis.runtime_errors)
         self.assertEqual(analysis.compile_errors, ["SyntaxError: Unexpected token"])
         self.assertIn("ValueError", analysis.stack_traces[0])
+        self.assertIn("worker.py", analysis.implicated_files)
+
+    def test_separate_stderr_survives_verbose_stdout(self):
+        from failure_analysis import analyze_failure
+        analysis = analyze_failure(1, "stdout noise\n" * 10000, "npm test", stderr=(
+            "TypeError: broken worker\n    at src/worker.ts:8:3\n"))
+        self.assertIn("src/worker.ts", analysis.implicated_files)
+        self.assertIn("TypeError: broken worker", analysis.runtime_errors)
+        self.assertIn("src/worker.ts:8:3", analysis.stack_traces[0])
 
     def test_timeout_remediation_includes_command_and_action_before_verbose_details(self):
         analysis = self.engine.analyze(-1, "Command timed out after 300s\n" + "noise\n" * 2000,

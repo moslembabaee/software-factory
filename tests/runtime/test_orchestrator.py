@@ -128,6 +128,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(stats["estimated_tokens"])
         self.assertGreaterEqual(stats["duration_seconds"], stats["verification_duration_seconds"])
         self.assertNotIn("active_attempt", task)
+        self.assertEqual(stats["successful_attempts"], 1)
+        self.assertEqual(stats["pending_attempts"], 0)
+        self.assertEqual(stats["success_rate"], .5)
+        self.assertAlmostEqual(stats["prompt_cost_usd"] + stats["completion_cost_usd"], stats["cost_usd"])
 
     def test_snapshot_shows_running_agent_then_spend_during_verification(self):
         import build_dashboard
@@ -136,16 +140,25 @@ class RuntimeTests(unittest.TestCase):
             snap = build_dashboard.snapshot(self.config.roadmap_file, {"tenantId": "tenant"}, "project")
             self.assertEqual(snap["tasks"][0]["active_attempt"]["agent"], "claude")
             self.assertEqual(snap["tasks"][0]["active_attempt"]["phase"], "agent")
-            return 0, '{"input_tokens":1000,"output_tokens":200}'
+            return 0, '{"model":"reported-model","input_tokens":1000,"output_tokens":200}'
         original = runtime.verify_task.verify_task
         def verify(*args, **kwargs):
             current = self.latest()
             self.assertEqual(current["telemetry"]["tokens"]["total"], 1200)
             self.assertEqual(current["active_attempt"]["phase"], "verification")
+            snap = build_dashboard.snapshot(self.config.roadmap_file, {"tenantId": "tenant"}, "project")
+            self.assertEqual(snap["metrics"]["successful_attempts"], 0)
+            self.assertEqual(snap["metrics"]["pending_attempts"], 1)
+            self.assertEqual(snap["metrics"]["models"][0]["model"], "reported-model")
+            self.assertEqual(snap["metrics"]["prompt_cost_usd"], .003)
+            self.assertEqual(snap["metrics"]["completion_cost_usd"], .003)
             return original(*args, **kwargs)
         with patch.object(runtime, "execute_agent_task", side_effect=agent), \
                 patch.object(runtime.verify_task, "verify_task", side_effect=verify):
             self.assertEqual(self.worker.run_once(), "completed")
+
+        self.assertEqual(self.latest()["telemetry"]["successful_attempts"], 1)
+        self.assertEqual(self.latest()["telemetry"]["pending_attempts"], 0)
 
     def test_zero_budget_blocks_provider_dispatch(self):
         self.set_task(budget_cap_usd=0)
@@ -265,6 +278,51 @@ class RuntimeTests(unittest.TestCase):
         prompt = runtime.build_prompt(task, self.config, agent="antigravity")
         self.assertIn("Remediation Prompt for antigravity", prompt)
         self.assertIn("regression", prompt)
+
+    def test_retry_repairs_correlated_file_and_resolves_roadmap_directive(self):
+        (self.repo / "src").mkdir()
+        source = self.repo / "src/service.ts"
+        source.write_text("good\n")
+        self.git("add", "src/service.ts")
+        self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "baseline service")
+        command = ('if [ "$(cat src/service.ts)" != good ]; then '
+                   "echo 'src/service.ts(1,1): error TS2322: Wrong return type' >&2; exit 1; fi")
+        self.set_task(verification_cmd=command)
+        prompts = []
+
+        def agent(_name, prompt, _config):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                source.write_text("broken\n")
+            else:
+                child = next(task for task in self.data()["tasks"] if task.get("is_verification_remediation"))
+                self.assertEqual(child["status"], "pending")
+                self.assertEqual(child["target_files"], ["src/service.ts"])
+                self.assertIn(child["id"], prompt)
+                self.assertIn("+broken", prompt)
+                self.assertEqual(self.latest()["failure_analysis"]["related_files"], ["src/service.ts"])
+                source.write_text("good\n")
+            return 0, "done"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent):
+            self.assertEqual(self.worker.run_once(), "completed")
+        children = [task for task in self.data()["tasks"] if task.get("is_verification_remediation")]
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0]["status"], "completed")
+        self.assertEqual([record["exit_code"] for record in self.latest()["verifications"]], [1, 0])
+        self.assertIn("remediation_task_id", self.latest()["verifications"][0])
+
+    def test_exhausted_retry_chain_resolves_directives_without_independent_dispatch(self):
+        self.set_task(verification_cmd="echo 'Error: persistent regression' >&2; exit 1")
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")) as agent:
+            self.assertEqual(self.worker.run_once(), "failed")
+            self.assertEqual(agent.call_count, 3)
+            self.assertEqual(self.worker.run_once(), "idle")
+        children = [task for task in self.data()["tasks"] if task.get("is_verification_remediation")]
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0]["status"], "failed")
+        self.assertNotIn("remediation_task_id", self.latest())
 
     def test_pending_pr_is_polled_without_dispatching_or_verifying_again(self):
         self.github.ci = []
@@ -413,7 +471,7 @@ class RuntimeTests(unittest.TestCase):
             return 0, "verified"
 
         with patch.object(runtime, "execute_agent_task", return_value=(0, "done")), \
-                patch.object(runtime, "run_cmd", side_effect=verify) as command:
+                patch.object(runtime, "run_cmd_split", side_effect=verify) as command:
             self.assertEqual(self.worker.run_once(), "cancelled")
         self.assertEqual(command.call_count, 1)
         self.assertEqual(self.latest()["status"], "waiting_approval")

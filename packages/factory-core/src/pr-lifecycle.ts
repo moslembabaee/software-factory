@@ -14,6 +14,10 @@ export const PullRequestStatusSchema = z.enum([
   "review_pending",
   "review_passed",
   "review_failed",
+  "queued",
+  "rebasing",
+  "rebased",
+  "conflict",
 ]);
 
 export const CiStatusSchema = z.enum([
@@ -105,6 +109,93 @@ export const PullRequestMetadataSchema = z.strictObject({
   issueNumber: z.number().int().positive().nullable().optional(),
 });
 
+export const MergeStateStatusSchema = z.enum([
+  "CLEAN",
+  "DIRTY",
+  "BEHIND",
+  "BLOCKED",
+  "HAS_HOOKS",
+  "UNSTABLE",
+  "DRAFT",
+  "UNKNOWN",
+]);
+
+export const ConflictDetailsSchema = z.strictObject({
+  hasConflict: z.boolean(),
+  conflictFiles: z.array(z.string().min(1)),
+  baseBranch: z.string().min(1),
+  baseSha: z.string().min(1),
+  headSha: z.string().min(1),
+  detectedAt: z.string(),
+  reason: z.string().optional(),
+  canAutoRebase: z.boolean().default(true),
+});
+
+export const RebaseStatusSchema = z.enum([
+  "clean",
+  "conflict",
+  "verification_failed",
+  "failed",
+  "already_up_to_date",
+]);
+
+export const RebaseResultSchema = z.strictObject({
+  success: z.boolean(),
+  status: RebaseStatusSchema,
+  previousHeadSha: z.string().min(1),
+  rebasedHeadSha: z.string().min(1).optional(),
+  baseSha: z.string().min(1),
+  conflictFiles: z.array(z.string()).default([]),
+  verificationPassed: z.boolean().optional(),
+  verificationOutput: z.string().max(4000).optional(),
+  error: z.string().max(2000).optional(),
+  rebasedAt: z.string(),
+});
+
+export const MergeQueueStatusSchema = z.enum([
+  "queued",
+  "checking",
+  "rebasing",
+  "verifying",
+  "ready_to_merge",
+  "merged",
+  "conflict",
+  "failed",
+]);
+
+export const MergeQueueEntrySchema = z.strictObject({
+  id: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  taskId: z.string().min(1),
+  branch: z.string().min(1),
+  baseBranch: z.string().min(1),
+  headSha: z.string().min(1),
+  baseSha: z.string().min(1),
+  status: MergeQueueStatusSchema,
+  priority: z.number().int().default(0),
+  queuedAt: z.string(),
+  updatedAt: z.string(),
+  rebaseAttempts: z.number().int().nonnegative().default(0),
+  lastRebaseResult: RebaseResultSchema.optional(),
+  conflictDetails: ConflictDetailsSchema.optional(),
+  errorMessage: z.string().optional(),
+});
+
+export const MergeQueuePolicySchema = z.strictObject({
+  maxRebaseAttempts: z.number().int().positive().default(3),
+  requireReverification: z.boolean().default(true),
+  autoRebaseConflicts: z.boolean().default(true),
+  timeoutMs: z.number().positive().default(120_000),
+});
+
+export type MergeStateStatus = z.infer<typeof MergeStateStatusSchema>;
+export type ConflictDetails = z.infer<typeof ConflictDetailsSchema>;
+export type RebaseStatus = z.infer<typeof RebaseStatusSchema>;
+export type RebaseResult = z.infer<typeof RebaseResultSchema>;
+export type MergeQueueStatus = z.infer<typeof MergeQueueStatusSchema>;
+export type MergeQueueEntry = z.infer<typeof MergeQueueEntrySchema>;
+export type MergeQueuePolicy = z.infer<typeof MergeQueuePolicySchema>;
+
 export const PullRequestSchema = z.strictObject({
   number: z.number().int().positive(),
   url: z.url(),
@@ -118,6 +209,9 @@ export const PullRequestSchema = z.strictObject({
   createdAt: z.string(),
   mergedAt: z.string().nullable().optional(),
   consensusReview: ConsensusReviewGateResultSchema.optional(),
+  conflictDetails: ConflictDetailsSchema.optional(),
+  rebaseResult: RebaseResultSchema.optional(),
+  mergeQueueStatus: MergeQueueStatusSchema.optional(),
 });
 
 export type PullRequestStatus = z.infer<typeof PullRequestStatusSchema>;
@@ -201,7 +295,9 @@ export function canAutoMerge(
       prStatus === "review_requested" ||
       prStatus === "ci_passed" ||
       prStatus === "approved" ||
-      prStatus === "review_passed")
+      prStatus === "review_passed" ||
+      prStatus === "rebased" ||
+      prStatus === "queued")
   );
 }
 
@@ -998,3 +1094,354 @@ export function evaluateConsensusReviewGate(
     evaluatedAt: new Date().toISOString(),
   };
 }
+
+export function parseConflictFilesFromGitOutput(output: string): string[] {
+  const files = new Set<string>();
+  const lines = output.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const match =
+      /CONFLICT\s*(?:\([^)]+\))?:\s*(?:Merge conflict in\s+)?([^\s,]+)/i.exec(
+        trimmed,
+      );
+    if (match?.[1]) {
+      const candidate = match[1].replace(/[.,:;]$/, "").trim();
+      if (candidate && !candidate.startsWith("(") && !candidate.includes(" ")) {
+        files.add(candidate);
+      }
+    }
+    const modifyMatch =
+      /CONFLICT\s*\([^)]+\):\s*(\S+)\s+deleted in/i.exec(trimmed);
+    if (modifyMatch?.[1]) {
+      const candidate = modifyMatch[1].replace(/[.,:;]$/, "").trim();
+      if (candidate) {
+        files.add(candidate);
+      }
+    }
+    const statusMatch =
+      /^(?:both modified|both added|added by us|added by them):\s+(\S+)/i.exec(
+        trimmed,
+      );
+    if (statusMatch?.[1]) {
+      files.add(statusMatch[1].trim());
+    }
+  }
+  return Array.from(files).sort();
+}
+
+export function detectConflict(input: {
+  mergeStateStatus?: string;
+  currentBaseSha?: string;
+  prBaseSha?: string;
+  conflictFiles?: string[];
+  baseBranch?: string;
+  headSha?: string;
+}): ConflictDetails {
+  const isDirty = input.mergeStateStatus === "DIRTY";
+  const hasFiles = Boolean(input.conflictFiles && input.conflictFiles.length > 0);
+  const baseSha = input.currentBaseSha ?? input.prBaseSha ?? "unknown";
+  const headSha = input.headSha ?? "unknown";
+  const baseBranch = input.baseBranch ?? "main";
+  const hasConflict = isDirty || hasFiles;
+
+  let reason: string | undefined;
+  if (isDirty) {
+    reason = "GitHub detected merge conflict (DIRTY merge state)";
+  } else if (hasFiles) {
+    reason = `Merge conflict detected in ${String(input.conflictFiles!.length)} file(s)`;
+  } else if (
+    input.currentBaseSha &&
+    input.prBaseSha &&
+    input.currentBaseSha !== input.prBaseSha
+  ) {
+    reason = "Base branch has advanced past PR base commit";
+  }
+
+  return {
+    hasConflict,
+    conflictFiles: input.conflictFiles
+      ? [...new Set(input.conflictFiles)].sort()
+      : [],
+    baseBranch,
+    baseSha,
+    headSha,
+    detectedAt: new Date().toISOString(),
+    reason,
+    canAutoRebase: true,
+  };
+}
+
+export function isPrBehindBase(
+  currentBaseSha: string,
+  prBaseSha?: string,
+  mergeStateStatus?: string,
+): boolean {
+  if (mergeStateStatus === "BEHIND") return true;
+  if (!prBaseSha || !currentBaseSha) return false;
+  return currentBaseSha.trim() !== prBaseSha.trim();
+}
+
+export function canAutoRebase(
+  conflictDetails: ConflictDetails,
+  attempts = 0,
+  policy?: Partial<MergeQueuePolicy>,
+): boolean {
+  const parsedPolicy = MergeQueuePolicySchema.parse(policy ?? {});
+  if (attempts >= parsedPolicy.maxRebaseAttempts) return false;
+  if (!conflictDetails.canAutoRebase) return false;
+  return true;
+}
+
+export function sortMergeQueue(entries: MergeQueueEntry[]): MergeQueueEntry[] {
+  return [...entries].sort((a, b) => {
+    if (b.priority !== a.priority) {
+      return b.priority - a.priority;
+    }
+    const timeA = new Date(a.queuedAt).getTime();
+    const timeB = new Date(b.queuedAt).getTime();
+    return timeA - timeB;
+  });
+}
+
+export function getNextMergeQueueCandidate(
+  entries: MergeQueueEntry[],
+): MergeQueueEntry | null {
+  const sorted = sortMergeQueue(entries);
+  return (
+    sorted.find(
+      (e) =>
+        e.status === "queued" ||
+        e.status === "ready_to_merge" ||
+        e.status === "checking",
+    ) ?? null
+  );
+}
+
+export function reconcileMergeQueueStep(
+  entry: MergeQueueEntry,
+  context: {
+    currentBaseSha: string;
+    mergeStateStatus?: string;
+    ciStatus?: CiStatus;
+    consensusGate?: ConsensusReviewGateResult | null;
+  },
+): {
+  nextStatus: MergeQueueStatus;
+  action:
+    | "rebase"
+    | "verify"
+    | "merge"
+    | "wait_ci"
+    | "wait_review"
+    | "block_conflict"
+    | "none";
+  reason: string;
+} {
+  if (context.mergeStateStatus === "DIRTY") {
+    return {
+      nextStatus: "conflict",
+      action: "block_conflict",
+      reason: "PR has merge conflicts with target branch",
+    };
+  }
+
+  const isBehind = isPrBehindBase(
+    context.currentBaseSha,
+    entry.baseSha,
+    context.mergeStateStatus,
+  );
+  if (isBehind) {
+    return {
+      nextStatus: "rebasing",
+      action: "rebase",
+      reason: "Base branch advanced; rebase required",
+    };
+  }
+
+  if (entry.status === "verifying") {
+    return {
+      nextStatus: "verifying",
+      action: "verify",
+      reason: "Verification suite re-execution pending",
+    };
+  }
+
+  if (context.ciStatus === "pending") {
+    return {
+      nextStatus: "checking",
+      action: "wait_ci",
+      reason: "Waiting for CI checks to complete",
+    };
+  }
+  if (context.ciStatus === "failed") {
+    return {
+      nextStatus: "failed",
+      action: "none",
+      reason: "CI checks failed",
+    };
+  }
+
+  const reviewPassed = context.consensusGate?.passed ?? false;
+  if (!reviewPassed) {
+    return {
+      nextStatus: "checking",
+      action: "wait_review",
+      reason: "Consensus review gate has not passed",
+    };
+  }
+
+  if (
+    context.mergeStateStatus === "CLEAN" &&
+    context.ciStatus === "passed" &&
+    reviewPassed
+  ) {
+    return {
+      nextStatus: "ready_to_merge",
+      action: "merge",
+      reason: "PR is clean, verified, and approved; ready for auto-merge",
+    };
+  }
+
+  return {
+    nextStatus: entry.status,
+    action: "none",
+    reason: "No transition applicable",
+  };
+}
+
+export function canMergeAfterRebase(
+  rebaseResult: RebaseResult,
+  ciStatus: CiStatus,
+  consensusGate?: ConsensusReviewGateResult | null,
+): boolean {
+  if (!rebaseResult.success || rebaseResult.status !== "clean") {
+    return false;
+  }
+  if (rebaseResult.verificationPassed !== true) {
+    return false;
+  }
+  return canAutoMerge(ciStatus, "rebased", consensusGate);
+}
+
+export type GitCommandExecutor = (
+  command: string[],
+) =>
+  | Promise<{ code: number; stdout: string; stderr?: string }>
+  | { code: number; stdout: string; stderr?: string };
+
+export type VerificationExecutor = (
+  cmd: string,
+) =>
+  | Promise<{ code: number; stdout: string }>
+  | { code: number; stdout: string };
+
+export async function attemptAutomatedRebase(input: {
+  branch: string;
+  baseBranch: string;
+  previousHeadSha: string;
+  verificationCmd?: string;
+  gitRunner: GitCommandExecutor;
+  verificationRunner?: VerificationExecutor;
+}): Promise<RebaseResult> {
+  const {
+    branch,
+    baseBranch,
+    previousHeadSha,
+    verificationCmd,
+    gitRunner,
+    verificationRunner,
+  } = input;
+
+  const baseRes = await gitRunner(["rev-parse", baseBranch]);
+  const baseSha = baseRes.code === 0 ? baseRes.stdout.trim() : "unknown";
+
+  const checkoutRes = await gitRunner(["checkout", branch]);
+  if (checkoutRes.code !== 0) {
+    return {
+      success: false,
+      status: "failed",
+      previousHeadSha,
+      baseSha,
+      conflictFiles: [],
+      error: `Failed to checkout ${branch}: ${checkoutRes.stderr ?? checkoutRes.stdout}`,
+      rebasedAt: new Date().toISOString(),
+    };
+  }
+
+  const rebaseRes = await gitRunner(["rebase", "--autostash", baseBranch]);
+  if (rebaseRes.code !== 0) {
+    const combinedOutput = [rebaseRes.stdout, rebaseRes.stderr ?? ""]
+      .filter(Boolean)
+      .join("\n");
+    const conflictFiles = parseConflictFilesFromGitOutput(combinedOutput);
+    await gitRunner(["rebase", "--abort"]);
+    await gitRunner(["checkout", baseBranch]);
+    return {
+      success: false,
+      status: conflictFiles.length > 0 ? "conflict" : "failed",
+      previousHeadSha,
+      baseSha,
+      conflictFiles,
+      verificationPassed: false,
+      error: combinedOutput.slice(0, 2000),
+      rebasedAt: new Date().toISOString(),
+    };
+  }
+
+  const headRes = await gitRunner(["rev-parse", "HEAD"]);
+  const rebasedHeadSha =
+    headRes.code === 0 ? headRes.stdout.trim() : previousHeadSha;
+
+  if (rebasedHeadSha === previousHeadSha) {
+    await gitRunner(["checkout", baseBranch]);
+    return {
+      success: true,
+      status: "already_up_to_date",
+      previousHeadSha,
+      rebasedHeadSha,
+      baseSha,
+      conflictFiles: [],
+      verificationPassed: true,
+      rebasedAt: new Date().toISOString(),
+    };
+  }
+
+  let verificationPassed = true;
+  let verificationOutput: string | undefined;
+  if (verificationCmd && verificationRunner) {
+    const vRes = await verificationRunner(verificationCmd);
+    verificationPassed = vRes.code === 0;
+    verificationOutput = vRes.stdout.slice(0, 4000);
+    if (!verificationPassed) {
+      await gitRunner(["reset", "--hard", previousHeadSha]);
+      await gitRunner(["checkout", baseBranch]);
+      return {
+        success: false,
+        status: "verification_failed",
+        previousHeadSha,
+        rebasedHeadSha,
+        baseSha,
+        conflictFiles: [],
+        verificationPassed: false,
+        verificationOutput,
+        error: `Verification failed after rebase: ${verificationOutput.slice(0, 500)}`,
+        rebasedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  await gitRunner(["checkout", baseBranch]);
+  return {
+    success: true,
+    status: "clean",
+    previousHeadSha,
+    rebasedHeadSha,
+    baseSha,
+    conflictFiles: [],
+    verificationPassed,
+    verificationOutput,
+    rebasedAt: new Date().toISOString(),
+  };
+}
+
+

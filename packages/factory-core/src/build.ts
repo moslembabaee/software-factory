@@ -39,6 +39,14 @@ export const FailureModesSchema = z.strictObject({
 export const TaskTelemetrySchema = z.strictObject({
   tokens: TaskTokensSchema,
   cost_usd: z.number().nonnegative(),
+  prompt_cost_usd: z.number().nonnegative().optional(),
+  completion_cost_usd: z.number().nonnegative().optional(),
+  avg_agent_latency_seconds: z.number().nonnegative().optional(),
+  avg_verification_latency_seconds: z.number().nonnegative().optional(),
+  successful_attempts: z.number().int().nonnegative().optional(),
+  pending_attempts: z.number().int().nonnegative().optional(),
+  success_rate: z.number().min(0).max(1).optional(),
+  failure_rate: z.number().min(0).max(1).optional(),
   duration_seconds: z.number().nonnegative(),
   agent_duration_seconds: z.number().nonnegative(),
   verification_duration_seconds: z.number().nonnegative(),
@@ -93,6 +101,20 @@ export const AgentMetricsSchema = z.strictObject({
   agent: z.string(),
   attempt_count: z.number().int().nonnegative(),
   failed_attempts: z.number().int().nonnegative(),
+  successful_attempts: z.number().int().nonnegative().optional(),
+  pending_attempts: z.number().int().nonnegative().optional(),
+  success_rate: z.number().min(0).max(1).optional(),
+  failure_rate: z.number().min(0).max(1).optional(),
+  prompt_tokens: z.number().int().nonnegative().optional(),
+  completion_tokens: z.number().int().nonnegative().optional(),
+  prompt_cost_usd: z.number().nonnegative().optional(),
+  completion_cost_usd: z.number().nonnegative().optional(),
+  avg_agent_latency_seconds: z.number().nonnegative().optional(),
+  avg_verification_latency_seconds: z.number().nonnegative().optional(),
+  min_latency_seconds: z.number().nonnegative().optional(),
+  max_latency_seconds: z.number().nonnegative().optional(),
+  p50_latency_seconds: z.number().nonnegative().optional(),
+  p95_latency_seconds: z.number().nonnegative().optional(),
   total_tokens: z.number().int().nonnegative(),
   total_cost_usd: z.number().nonnegative(),
   avg_latency_seconds: z.number().nonnegative(),
@@ -100,12 +122,31 @@ export const AgentMetricsSchema = z.strictObject({
   failure_modes: FailureModesSchema,
 });
 
+export const ModelMetricsSchema = AgentMetricsSchema.extend({
+  model: z.string(),
+});
+
 export const BuildMetricsSchema = AgentMetricsSchema.omit({
   agent: true,
-  failed_attempts: true,
 }).extend({
+  // Additive fields remain optional for older snapshot producers.
+  failed_attempts: z.number().int().nonnegative().optional(),
   agents: z.array(AgentMetricsSchema),
+  models: z.array(ModelMetricsSchema).optional(),
   budget: BuildMetricsBudgetSchema,
+  total_duration_seconds: z.number().nonnegative().optional(),
+  total_agent_duration_seconds: z.number().nonnegative().optional(),
+  total_verification_duration_seconds: z.number().nonnegative().optional(),
+  task_lifecycle_counts: z
+    .partialRecord(BuildStatusSchema, z.number().int().nonnegative())
+    .optional(),
+  total_tasks_count: z.number().int().nonnegative().optional(),
+  completed_tasks_count: z.number().int().nonnegative().optional(),
+  active_tasks_count: z.number().int().nonnegative().optional(),
+  pending_tasks_count: z.number().int().nonnegative().optional(),
+  failed_tasks_count: z.number().int().nonnegative().optional(),
+  active_agent_count: z.number().int().nonnegative().optional(),
+  completion_rate: z.number().min(0).max(1).optional(),
 });
 
 export const BuildSnapshotSchema = z.strictObject({
@@ -131,6 +172,8 @@ export type TaskTokens = z.infer<typeof TaskTokensSchema>;
 export type TaskBudget = z.infer<typeof TaskBudgetSchema>;
 export type TaskTelemetry = z.infer<typeof TaskTelemetrySchema>;
 export type BuildMetrics = z.infer<typeof BuildMetricsSchema>;
+export type AgentMetrics = z.infer<typeof AgentMetricsSchema>;
+export type ModelMetrics = z.infer<typeof ModelMetricsSchema>;
 export type BuildMetricsBudget = z.infer<typeof BuildMetricsBudgetSchema>;
 export type BuildBudgetUpdate = z.infer<typeof BuildBudgetUpdateSchema>;
 

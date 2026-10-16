@@ -1632,6 +1632,34 @@ components:
                   cost_usd:
                     type: number
                     minimum: 0
+                  prompt_cost_usd:
+                    type: number
+                    minimum: 0
+                  completion_cost_usd:
+                    type: number
+                    minimum: 0
+                  avg_agent_latency_seconds:
+                    type: number
+                    minimum: 0
+                  avg_verification_latency_seconds:
+                    type: number
+                    minimum: 0
+                  successful_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  pending_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  success_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  failure_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
                   duration_seconds:
                     type: number
                     minimum: 0
@@ -1728,8 +1756,7 @@ components:
                       started_at:
                         type: string
                         format: date-time
-                        pattern: >-
-                          ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+                        pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
                       elapsed_seconds:
                         type: number
                         minimum: 0
@@ -1766,8 +1793,7 @@ components:
               id:
                 type: string
                 format: uuid
-                pattern: >-
-                  ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+                pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
               task_id:
                 type: string
               source:
@@ -1795,6 +1821,58 @@ components:
               type: integer
               minimum: 0
               maximum: 9007199254740991
+            failed_attempts:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            successful_attempts:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            pending_attempts:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            success_rate:
+              type: number
+              minimum: 0
+              maximum: 1
+            failure_rate:
+              type: number
+              minimum: 0
+              maximum: 1
+            prompt_tokens:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            completion_tokens:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            prompt_cost_usd:
+              type: number
+              minimum: 0
+            completion_cost_usd:
+              type: number
+              minimum: 0
+            avg_agent_latency_seconds:
+              type: number
+              minimum: 0
+            avg_verification_latency_seconds:
+              type: number
+              minimum: 0
+            min_latency_seconds:
+              type: number
+              minimum: 0
+            max_latency_seconds:
+              type: number
+              minimum: 0
+            p50_latency_seconds:
+              type: number
+              minimum: 0
+            p95_latency_seconds:
+              type: number
+              minimum: 0
             total_tokens:
               type: integer
               minimum: 0
@@ -1852,6 +1930,54 @@ components:
                     type: integer
                     minimum: 0
                     maximum: 9007199254740991
+                  successful_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  pending_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  success_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  failure_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  prompt_tokens:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  completion_tokens:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  prompt_cost_usd:
+                    type: number
+                    minimum: 0
+                  completion_cost_usd:
+                    type: number
+                    minimum: 0
+                  avg_agent_latency_seconds:
+                    type: number
+                    minimum: 0
+                  avg_verification_latency_seconds:
+                    type: number
+                    minimum: 0
+                  min_latency_seconds:
+                    type: number
+                    minimum: 0
+                  max_latency_seconds:
+                    type: number
+                    minimum: 0
+                  p50_latency_seconds:
+                    type: number
+                    minimum: 0
+                  p95_latency_seconds:
+                    type: number
+                    minimum: 0
                   total_tokens:
                     type: integer
                     minimum: 0
@@ -1904,6 +2030,124 @@ components:
                   - retry_rate
                   - failure_modes
                 additionalProperties: false
+            models:
+              type: array
+              items:
+                type: object
+                properties:
+                  agent:
+                    type: string
+                  attempt_count:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  failed_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  successful_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  pending_attempts:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  success_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  failure_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  prompt_tokens:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  completion_tokens:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  prompt_cost_usd:
+                    type: number
+                    minimum: 0
+                  completion_cost_usd:
+                    type: number
+                    minimum: 0
+                  avg_agent_latency_seconds:
+                    type: number
+                    minimum: 0
+                  avg_verification_latency_seconds:
+                    type: number
+                    minimum: 0
+                  min_latency_seconds:
+                    type: number
+                    minimum: 0
+                  max_latency_seconds:
+                    type: number
+                    minimum: 0
+                  p50_latency_seconds:
+                    type: number
+                    minimum: 0
+                  p95_latency_seconds:
+                    type: number
+                    minimum: 0
+                  total_tokens:
+                    type: integer
+                    minimum: 0
+                    maximum: 9007199254740991
+                  total_cost_usd:
+                    type: number
+                    minimum: 0
+                  avg_latency_seconds:
+                    type: number
+                    minimum: 0
+                  retry_rate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  failure_modes:
+                    type: object
+                    properties:
+                      quota:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      agent:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      verification:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      budget_exceeded:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      timeout:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                      runtime:
+                        type: integer
+                        minimum: 0
+                        maximum: 9007199254740991
+                    additionalProperties: false
+                  model:
+                    type: string
+                required:
+                  - agent
+                  - attempt_count
+                  - failed_attempts
+                  - total_tokens
+                  - total_cost_usd
+                  - avg_latency_seconds
+                  - retry_rate
+                  - failure_modes
+                  - model
+                additionalProperties: false
             budget:
               type: object
               properties:
@@ -1922,6 +2166,64 @@ components:
                 - total_spent_usd
                 - exceeded
               additionalProperties: false
+            total_duration_seconds:
+              type: number
+              minimum: 0
+            total_agent_duration_seconds:
+              type: number
+              minimum: 0
+            total_verification_duration_seconds:
+              type: number
+              minimum: 0
+            task_lifecycle_counts:
+              type: object
+              propertyNames:
+                type: string
+                enum:
+                  - pending
+                  - waiting_approval
+                  - pending_approval
+                  - assigned
+                  - approved
+                  - in_progress
+                  - ready_for_verification
+                  - verified
+                  - completed
+                  - failed
+                  - escalated
+                  - cancelled
+              additionalProperties:
+                type: integer
+                minimum: 0
+                maximum: 9007199254740991
+            total_tasks_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            completed_tasks_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            active_tasks_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            pending_tasks_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            failed_tasks_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            active_agent_count:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            completion_rate:
+              type: number
+              minimum: 0
+              maximum: 1
           required:
             - attempt_count
             - total_tokens

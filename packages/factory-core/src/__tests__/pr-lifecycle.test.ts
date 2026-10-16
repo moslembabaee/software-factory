@@ -19,6 +19,22 @@ import {
   evaluateLintReview,
   dispatchParallelReviews,
   evaluateConsensusReviewGate,
+  MergeStateStatusSchema,
+  ConflictDetailsSchema,
+  RebaseStatusSchema,
+  RebaseResultSchema,
+  MergeQueueStatusSchema,
+  MergeQueueEntrySchema,
+  MergeQueuePolicySchema,
+  parseConflictFilesFromGitOutput,
+  detectConflict,
+  isPrBehindBase,
+  canAutoRebase,
+  sortMergeQueue,
+  getNextMergeQueueCandidate,
+  reconcileMergeQueueStep,
+  canMergeAfterRebase,
+  attemptAutomatedRebase,
 } from "../pr-lifecycle.js";
 
 describe("pr-lifecycle domain logic and schemas", () => {
@@ -664,5 +680,448 @@ describe("review gate evidence and deadlines", () => {
     expect(
       evaluateSecurityReview("import { x } from '../../utils.js';").passed,
     ).toBe(true);
+  });
+});
+
+describe("merge queue and conflict resolution handler", () => {
+  it("validates merge queue schemas and policies", () => {
+    expect(MergeStateStatusSchema.parse("CLEAN")).toBe("CLEAN");
+    expect(MergeStateStatusSchema.parse("DIRTY")).toBe("DIRTY");
+    expect(MergeStateStatusSchema.parse("BEHIND")).toBe("BEHIND");
+    expect(() => MergeStateStatusSchema.parse("UNKNOWN_STATUS")).toThrow();
+
+    expect(MergeQueueStatusSchema.parse("queued")).toBe("queued");
+    expect(RebaseStatusSchema.parse("clean")).toBe("clean");
+
+    const conflictObj = {
+      hasConflict: true,
+      conflictFiles: ["src/file.ts"],
+      baseBranch: "main",
+      baseSha: "1".repeat(40),
+      headSha: "2".repeat(40),
+      detectedAt: new Date().toISOString(),
+    };
+    expect(ConflictDetailsSchema.parse(conflictObj)).toMatchObject(conflictObj);
+
+    const rebaseObj = {
+      success: true,
+      status: "clean" as const,
+      previousHeadSha: "1".repeat(40),
+      baseSha: "2".repeat(40),
+      rebasedAt: new Date().toISOString(),
+    };
+    expect(RebaseResultSchema.parse(rebaseObj)).toMatchObject(rebaseObj);
+
+    const defaultPolicy = MergeQueuePolicySchema.parse({});
+    expect(defaultPolicy.maxRebaseAttempts).toBe(3);
+    expect(defaultPolicy.requireReverification).toBe(true);
+    expect(defaultPolicy.autoRebaseConflicts).toBe(true);
+
+    const customPolicy = MergeQueuePolicySchema.parse({
+      maxRebaseAttempts: 5,
+      requireReverification: false,
+      autoRebaseConflicts: false,
+      timeoutMs: 60_000,
+    });
+    expect(customPolicy.maxRebaseAttempts).toBe(5);
+    expect(customPolicy.timeoutMs).toBe(60_000);
+
+    const validEntry = {
+      id: "queue-1",
+      prNumber: 42,
+      taskId: "T-42",
+      branch: "factory/t-42",
+      baseBranch: "main",
+      headSha: "a".repeat(40),
+      baseSha: "b".repeat(40),
+      status: "queued" as const,
+      priority: 10,
+      rebaseAttempts: 0,
+      queuedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    expect(MergeQueueEntrySchema.parse(validEntry)).toMatchObject(validEntry);
+  });
+
+  it("parses conflict files from various Git conflict outputs", () => {
+    const gitOutput = `
+Auto-merging src/app.ts
+CONFLICT (content): Merge conflict in src/app.ts
+Auto-merging packages/factory-core/src/index.ts
+CONFLICT (modify/delete): packages/factory-core/src/old.ts deleted in HEAD and modified in feat.
+CONFLICT (add/add): Merge conflict in infra/schema.sql
+Recorded preimage for 'src/app.ts'
+`;
+    const files = parseConflictFilesFromGitOutput(gitOutput);
+    expect(files).toEqual([
+      "infra/schema.sql",
+      "packages/factory-core/src/old.ts",
+      "src/app.ts",
+    ]);
+
+    const statusOutput = `
+both modified:   packages/factory-core/src/build.ts
+both added:      tests/runtime/test_queue.py
+`;
+    expect(parseConflictFilesFromGitOutput(statusOutput)).toEqual([
+      "packages/factory-core/src/build.ts",
+      "tests/runtime/test_queue.py",
+    ]);
+
+    expect(parseConflictFilesFromGitOutput("Everything clean")).toEqual([]);
+  });
+
+  it("detects conflict conditions and base branch advancement accurately", () => {
+    const cleanDetails = detectConflict({
+      mergeStateStatus: "CLEAN",
+      currentBaseSha: "base123",
+      prBaseSha: "base123",
+      baseBranch: "main",
+      headSha: "head123",
+    });
+    expect(cleanDetails.hasConflict).toBe(false);
+    expect(cleanDetails.conflictFiles).toEqual([]);
+
+    const dirtyDetails = detectConflict({
+      mergeStateStatus: "DIRTY",
+      currentBaseSha: "base123",
+      prBaseSha: "base123",
+    });
+    expect(dirtyDetails.hasConflict).toBe(true);
+    expect(dirtyDetails.reason).toContain("DIRTY");
+
+    const filesDetails = detectConflict({
+      conflictFiles: ["src/app.ts", "package.json"],
+      currentBaseSha: "base123",
+      prBaseSha: "base123",
+    });
+    expect(filesDetails.hasConflict).toBe(true);
+    expect(filesDetails.conflictFiles).toEqual(["package.json", "src/app.ts"]);
+    expect(filesDetails.reason).toContain("Merge conflict detected in 2 file(s)");
+
+    const advancedDetails = detectConflict({
+      mergeStateStatus: "CLEAN",
+      currentBaseSha: "newBaseSha",
+      prBaseSha: "oldBaseSha",
+    });
+    expect(advancedDetails.hasConflict).toBe(false);
+    expect(advancedDetails.reason).toContain("Base branch has advanced");
+  });
+
+  it("evaluates whether a PR is behind the base branch", () => {
+    expect(isPrBehindBase("shaA", "shaB")).toBe(true);
+    expect(isPrBehindBase("shaA", "shaA")).toBe(false);
+    expect(isPrBehindBase("shaA", "shaA", "BEHIND")).toBe(true);
+    expect(isPrBehindBase("shaA", undefined)).toBe(false);
+  });
+
+  it("determines whether automatic rebase can be attempted", () => {
+    const conflict = detectConflict({ conflictFiles: ["src/app.ts"] });
+    expect(canAutoRebase(conflict, 0)).toBe(true);
+    expect(canAutoRebase(conflict, 2)).toBe(true);
+    expect(canAutoRebase(conflict, 3)).toBe(false);
+    expect(canAutoRebase(conflict, 0, { maxRebaseAttempts: 1 })).toBe(true);
+    expect(canAutoRebase(conflict, 1, { maxRebaseAttempts: 1 })).toBe(false);
+
+    const nonRebaseable = { ...conflict, canAutoRebase: false };
+    expect(canAutoRebase(nonRebaseable, 0)).toBe(false);
+  });
+
+  it("sorts merge queue entries by priority (descending) and arrival time (FIFO)", () => {
+    const t0 = new Date("2026-10-16T10:00:00Z").toISOString();
+    const t1 = new Date("2026-10-16T10:05:00Z").toISOString();
+    const t2 = new Date("2026-10-16T10:10:00Z").toISOString();
+
+    const entryLowEarly = {
+      id: "1",
+      prNumber: 1,
+      taskId: "T-1",
+      branch: "factory/t-1",
+      baseBranch: "main",
+      headSha: "a".repeat(40),
+      baseSha: "b".repeat(40),
+      status: "queued" as const,
+      priority: 0,
+      rebaseAttempts: 0,
+      queuedAt: t0,
+      updatedAt: t0,
+    };
+    const entryLowLate = {
+      ...entryLowEarly,
+      id: "2",
+      prNumber: 2,
+      taskId: "T-2",
+      queuedAt: t2,
+      updatedAt: t2,
+    };
+    const entryHighMid = {
+      ...entryLowEarly,
+      id: "3",
+      prNumber: 3,
+      taskId: "T-3",
+      priority: 10,
+      queuedAt: t1,
+      updatedAt: t1,
+    };
+
+    const sorted = sortMergeQueue([entryLowEarly, entryLowLate, entryHighMid]);
+    expect(sorted.map((e) => e.id)).toEqual(["3", "1", "2"]);
+
+    expect(getNextMergeQueueCandidate(sorted)?.id).toBe("3");
+
+    const terminalEntries = [
+      { ...entryHighMid, status: "merged" as const },
+      { ...entryLowEarly, status: "conflict" as const },
+    ];
+    expect(getNextMergeQueueCandidate(terminalEntries)).toBeNull();
+  });
+
+  it("reconciles merge queue steps correctly based on state and context", () => {
+    const entry = {
+      id: "queue-1",
+      prNumber: 10,
+      taskId: "T-10",
+      branch: "factory/t-10",
+      baseBranch: "main",
+      headSha: "h".repeat(40),
+      baseSha: "b".repeat(40),
+      status: "queued" as const,
+      priority: 0,
+      rebaseAttempts: 0,
+      queuedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // 1. DIRTY -> block conflict
+    const dirtyStep = reconcileMergeQueueStep(entry, {
+      currentBaseSha: "b".repeat(40),
+      mergeStateStatus: "DIRTY",
+    });
+    expect(dirtyStep.action).toBe("block_conflict");
+    expect(dirtyStep.nextStatus).toBe("conflict");
+
+    // 2. Base advanced -> rebase
+    const advanceStep = reconcileMergeQueueStep(entry, {
+      currentBaseSha: "newBaseSha1234567890",
+      mergeStateStatus: "CLEAN",
+    });
+    expect(advanceStep.action).toBe("rebase");
+    expect(advanceStep.nextStatus).toBe("rebasing");
+
+    // 3. Verifying state -> verify
+    const verifyingStep = reconcileMergeQueueStep(
+      { ...entry, status: "verifying" as const },
+      {
+        currentBaseSha: "b".repeat(40),
+        mergeStateStatus: "CLEAN",
+      },
+    );
+    expect(verifyingStep.action).toBe("verify");
+    expect(verifyingStep.nextStatus).toBe("verifying");
+
+    // 4. CI pending -> wait_ci
+    const pendingStep = reconcileMergeQueueStep(entry, {
+      currentBaseSha: "b".repeat(40),
+      mergeStateStatus: "CLEAN",
+      ciStatus: "pending",
+    });
+    expect(pendingStep.action).toBe("wait_ci");
+    expect(pendingStep.nextStatus).toBe("checking");
+
+    // 5. CI failed -> failed
+    const failedStep = reconcileMergeQueueStep(entry, {
+      currentBaseSha: "b".repeat(40),
+      mergeStateStatus: "CLEAN",
+      ciStatus: "failed",
+    });
+    expect(failedStep.action).toBe("none");
+    expect(failedStep.nextStatus).toBe("failed");
+
+    // 6. Clean, CI passed, review passed -> ready_to_merge
+    const passingGate = evaluateConsensusReviewGate([
+      evaluateSecurityReview("const ok = 1;"),
+      evaluateLintReview("const ok = 1;"),
+    ]);
+    const readyStep = reconcileMergeQueueStep(entry, {
+      currentBaseSha: "b".repeat(40),
+      mergeStateStatus: "CLEAN",
+      ciStatus: "passed",
+      consensusGate: passingGate,
+    });
+    expect(readyStep.action).toBe("merge");
+    expect(readyStep.nextStatus).toBe("ready_to_merge");
+  });
+
+  it("determines whether a PR can merge after rebase and verification", () => {
+    const gate = evaluateConsensusReviewGate([
+      evaluateSecurityReview("const safe = 1;"),
+      evaluateLintReview("const safe = 1;"),
+    ]);
+    const cleanRebase = {
+      success: true,
+      status: "clean" as const,
+      previousHeadSha: "1".repeat(40),
+      rebasedHeadSha: "2".repeat(40),
+      baseSha: "3".repeat(40),
+      conflictFiles: [],
+      verificationPassed: true,
+      rebasedAt: new Date().toISOString(),
+    };
+
+    expect(canMergeAfterRebase(cleanRebase, "passed", gate)).toBe(true);
+
+    expect(
+      canMergeAfterRebase(
+        { ...cleanRebase, verificationPassed: false },
+        "passed",
+        gate,
+      ),
+    ).toBe(false);
+
+    expect(
+      canMergeAfterRebase(
+        { ...cleanRebase, status: "conflict" as const, success: false },
+        "passed",
+        gate,
+      ),
+    ).toBe(false);
+
+    expect(canMergeAfterRebase(cleanRebase, "pending", gate)).toBe(false);
+  });
+
+  it("attempts automated rebase: clean rebase with verification suite passes", async () => {
+    const commands: string[][] = [];
+    const gitRunner = (cmd: string[]) => {
+      commands.push(cmd);
+      if (cmd[0] === "rev-parse" && cmd[1] === "main") {
+        return { code: 0, stdout: "base-sha-123\n" };
+      }
+      if (cmd[0] === "checkout" && cmd[1] === "factory/t-1") {
+        return { code: 0, stdout: "Switched to branch 'factory/t-1'\n" };
+      }
+      if (cmd[0] === "rebase") {
+        return { code: 0, stdout: "Successfully rebased\n" };
+      }
+      if (cmd[0] === "rev-parse" && cmd[1] === "HEAD") {
+        return { code: 0, stdout: "new-head-sha-456\n" };
+      }
+      if (cmd[0] === "checkout" && cmd[1] === "main") {
+        return { code: 0, stdout: "Switched to branch 'main'\n" };
+      }
+      return { code: 0, stdout: "" };
+    };
+
+    const verificationCalls: string[] = [];
+    const verificationRunner = (cmd: string) => {
+      verificationCalls.push(cmd);
+      return { code: 0, stdout: "All tests passed\n" };
+    };
+
+    const result = await attemptAutomatedRebase({
+      branch: "factory/t-1",
+      baseBranch: "main",
+      previousHeadSha: "old-head-sha-111",
+      verificationCmd: "npm run typecheck && npm test",
+      gitRunner,
+      verificationRunner,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("clean");
+    expect(result.rebasedHeadSha).toBe("new-head-sha-456");
+    expect(result.baseSha).toBe("base-sha-123");
+    expect(result.verificationPassed).toBe(true);
+    expect(verificationCalls).toEqual(["npm run typecheck && npm test"]);
+    expect(commands).toContainEqual(["checkout", "main"]);
+  });
+
+  it("attempts automated rebase: handles rebase conflict and aborts cleanly", async () => {
+    const commands: string[][] = [];
+    const gitRunner = (cmd: string[]) => {
+      commands.push(cmd);
+      if (cmd[0] === "rev-parse" && cmd[1] === "main") {
+        return { code: 0, stdout: "base-sha-123\n" };
+      }
+      if (cmd[0] === "checkout") {
+        return { code: 0, stdout: "" };
+      }
+      if (cmd[0] === "rebase" && cmd[1] === "--autostash") {
+        return {
+          code: 1,
+          stdout: "Auto-merging src/app.ts\nCONFLICT (content): Merge conflict in src/app.ts\n",
+          stderr: "error: could not apply commit\n",
+        };
+      }
+      return { code: 0, stdout: "" };
+    };
+
+    const result = await attemptAutomatedRebase({
+      branch: "factory/t-1",
+      baseBranch: "main",
+      previousHeadSha: "old-head-sha-111",
+      gitRunner,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe("conflict");
+    expect(result.conflictFiles).toEqual(["src/app.ts"]);
+    expect(commands).toContainEqual(["rebase", "--abort"]);
+    expect(commands[commands.length - 1]).toEqual(["checkout", "main"]);
+  });
+
+  it("attempts automated rebase: handles verification failure and resets branch", async () => {
+    const commands: string[][] = [];
+    const gitRunner = (cmd: string[]) => {
+      commands.push(cmd);
+      if (cmd[0] === "rev-parse" && cmd[1] === "main") {
+        return { code: 0, stdout: "base-sha-123\n" };
+      }
+      if (cmd[0] === "rev-parse" && cmd[1] === "HEAD") {
+        return { code: 0, stdout: "new-head-sha-456\n" };
+      }
+      return { code: 0, stdout: "" };
+    };
+
+    const verificationRunner = () => ({
+      code: 1,
+      stdout: "error TS2322: Type error after rebase\n",
+    });
+
+    const result = await attemptAutomatedRebase({
+      branch: "factory/t-1",
+      baseBranch: "main",
+      previousHeadSha: "old-head-sha-111",
+      verificationCmd: "npm run typecheck",
+      gitRunner,
+      verificationRunner,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe("verification_failed");
+    expect(result.verificationPassed).toBe(false);
+    expect(commands).toContainEqual(["reset", "--hard", "old-head-sha-111"]);
+    expect(commands[commands.length - 1]).toEqual(["checkout", "main"]);
+  });
+
+  it("attempts automated rebase: detects already up to date branch", async () => {
+    const gitRunner = (cmd: string[]) => {
+      if (cmd[0] === "rev-parse" && cmd[1] === "main") {
+        return { code: 0, stdout: "base-sha-123\n" };
+      }
+      if (cmd[0] === "rev-parse" && cmd[1] === "HEAD") {
+        return { code: 0, stdout: "same-head-sha\n" };
+      }
+      return { code: 0, stdout: "" };
+    };
+
+    const result = await attemptAutomatedRebase({
+      branch: "factory/t-1",
+      baseBranch: "main",
+      previousHeadSha: "same-head-sha",
+      gitRunner,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("already_up_to_date");
   });
 });

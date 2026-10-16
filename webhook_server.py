@@ -8,34 +8,26 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import build_events
+import event_bus
 import roadmap_sync
 import roadmap_store
+import issue_sync
 from issue_lifecycle import (
     FACTORY_TASK_LABEL,
     IGNORED_LABELS,
-    build_link_comment,
-    build_result_comment,
-    extract_assignee,
     get_webhook_dedupe_key,
-    infer_phase_from_labels,
-    is_webhook_duplicate,
     label_names,
     mark_issue_closed,
     record_sync_history,
-    record_webhook_processed,
     task_matches_issue,
-    unlink_and_pause_task,
 )
 
 PROJECT_ROOT = Path("/root/projects/software-factory").resolve()
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "webhook.log"
-DEDUPE_FILE = LOG_DIR / "webhook_dedupe.json"
 ROADMAP_FILE = PROJECT_ROOT / "ROADMAP.json"
 REPO = "moslembabaee/software-factory"
-
-_processed_events: set[str] = set()
 
 
 def log(msg: str):
@@ -102,7 +94,7 @@ def log_issue_tasks(issue_num: int, message: str):
         pass
 
 
-def handle_issue_closed(issue_num: int, closed_at: str | None = None):
+def handle_issue_closed(issue_num: int, closed_at: str | None = None, runner=None):
     if not isinstance(issue_num, int) or issue_num <= 0:
         return
     try:
@@ -112,24 +104,35 @@ def handle_issue_closed(issue_num: int, closed_at: str | None = None):
             log_issue_tasks(issue_num, f"GitHub issue #{issue_num} closed")
             roadmap_sync.sync_roadmap_to_github()
             log(f"Synchronized roadmap for closed Issue #{issue_num}")
+            try:
+                event_bus.publish("roadmap_sync", {
+                    "action": "issue_closed",
+                    "issue_number": issue_num,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
     except Exception as e:
         log(f"Error synchronizing closed Issue #{issue_num}: {e}")
 
     try:
-        res = subprocess.run(
+        code, out = run_gh(
             ["gh", "issue", "edit", str(issue_num), "--repo", REPO,
              "--remove-label", "in-progress,blocked"],
-            capture_output=True, text=True, timeout=30,
+            runner=runner, timeout=30,
         )
-        if res.returncode == 0:
+        if code == 0:
             log(f"Removed active labels from closed Issue #{issue_num}")
         else:
-            log(f"Label cleanup failed for Issue #{issue_num}: {res.stderr.strip()}")
+            log(f"Label cleanup failed for Issue #{issue_num}: {out.strip()}")
     except Exception as e:
         log(f"Error removing labels from Issue #{issue_num}: {e}")
 
 
-def mark_task_approved(issue_num: int):
+def mark_task_approved(issue_num: int, runner=None):
+    approved_task_ids = []
+    now_ts = datetime.now(timezone.utc).isoformat()
+
     def approve(data):
         modified = False
         for task in data.get("tasks", []):
@@ -141,6 +144,18 @@ def mark_task_approved(issue_num: int):
                 task.pop("backoff_seconds", None)
                 task.pop("paused_at", None)
                 task.pop("pause_reason", None)
+                tid = task.get("id")
+                approved_task_ids.append(tid)
+                record = {
+                    "timestamp": now_ts,
+                    "github_event": "issues",
+                    "github_action": "approved",
+                    "issue_number": issue_num,
+                    "task_id": tid,
+                    "action": "task_approved",
+                    "message": f"GitHub issue #{issue_num} approved: task {tid} marked approved",
+                }
+                record_sync_history(data, task, record)
                 modified = True
         return modified
 
@@ -148,10 +163,29 @@ def mark_task_approved(issue_num: int):
         if not ROADMAP_FILE.exists() or not roadmap_store.update_roadmap(ROADMAP_FILE, approve):
             return False
         log_issue_tasks(issue_num, f"GitHub issue #{issue_num} approved")
+        for tid in approved_task_ids:
+            try:
+                event_bus.publish("task_transition", {
+                    "task_id": tid,
+                    "status": "approved",
+                    "issue_number": issue_num,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+        try:
+            event_bus.publish("roadmap_sync", {
+                "action": "tasks_approved",
+                "issue_number": issue_num,
+                "task_ids": approved_task_ids,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
         roadmap_sync.sync_roadmap_to_github()
-        subprocess.run(
+        run_gh(
             ["gh", "issue", "edit", str(issue_num), "--repo", REPO,
-             "--remove-label", "blocked"], capture_output=True, text=True, timeout=30,
+             "--remove-label", "blocked"], runner=runner, timeout=30,
         )
         return True
     except Exception as e:
@@ -159,310 +193,97 @@ def mark_task_approved(issue_num: int):
         return False
 
 
-def handle_issue_labeled_factory_task(
-    issue: dict, payload: dict | None = None, runner=None,
-) -> bool:
-    """Create or reconcile a roadmap task when a GitHub issue is labeled 'factory/task'."""
-    num = issue.get("number")
-    if not isinstance(num, int) or num <= 0:
-        return False
+def reconcile_github_issue(issue: dict, payload: dict | None = None, runner=None,
+                           headers: dict | None = None) -> bool:
+    """Persist receipts with reconciliation; failed GitHub writes remain retryable."""
+    payload = {**(payload or {}), "issue": issue}
+    payload["delivery_id"] = (headers or {}).get("X-GitHub-Delivery")
+    key = get_webhook_dedupe_key(payload, headers)
+    delivered = False
+    records = []
 
-    labels = label_names(issue)
-    label_cfg = load_label_config()
-    phase = infer_phase_from_labels(labels, label_cfg)
-    assignee = extract_assignee(issue)
-    assigned_agent = assignee if assignee in ("claude", "codex", "antigravity") else "claude"
-    now_ts = datetime.now(timezone.utc).isoformat()
-
-    created_task_id: str | None = None
-    is_new = False
-
-    def apply(data: dict) -> bool:
-        nonlocal created_task_id, is_new
-        tasks = data.setdefault("tasks", [])
-        existing = next((t for t in tasks if task_matches_issue(t, num)), None)
-
-        if existing:
-            created_task_id = existing["id"]
-            existing["github_issue_number"] = num
-            existing.pop("unlinked", None)
-            existing.pop("unlinked_from_issue", None)
-            if existing.get("status") == "paused":
-                existing["status"] = "approved"
-                existing.pop("paused_at", None)
-                existing.pop("pause_reason", None)
-            existing["phase"] = phase
-            existing["title"] = f"Issue #{num}: {issue.get('title', '')}"
-            if assignee:
-                existing["assignee"] = assignee
-                if assignee in ("claude", "codex", "antigravity"):
-                    existing["assigned_agent"] = assignee
-            record = {
-                "timestamp": now_ts,
-                "github_event": "issues",
-                "github_action": "labeled",
-                "issue_id": issue.get("id"),
-                "issue_number": num,
-                "task_id": existing["id"],
-                "action": "reconciled_link",
-                "message": f"Reconciled task {existing['id']} from GitHub issue #{num} labeled '{FACTORY_TASK_LABEL}'",
-            }
-            record_sync_history(data, existing, record)
-            return True
+    def apply(data):
+        nonlocal delivered
+        receipts = data.setdefault("github_sync_events", [])
+        if key and key in receipts:
+            delivered = True
+            return False
+        history_start = len(data.get("history", []))
+        if payload.get("action") == "closed":
+            changed = mark_issue_closed(data, issue["number"], issue.get("closed_at"), issue.get("id"))
+            for record in data.get("history", [])[history_start:]:
+                record.update(event_key=key, event_timestamp=issue.get("updated_at"),
+                              delivery_id=payload.get("delivery_id"))
+            delivered = run_gh(["gh", "issue", "edit", str(issue["number"]), "--repo", REPO,
+                                "--remove-label", "in-progress,blocked"], runner=runner)[0] == 0
         else:
-            is_new = True
-            task_id = f"T-ISSUE-{num}"
-            existing_ids = {t.get("id") for t in tasks}
-            if task_id in existing_ids:
-                task_id = f"T-ISSUE-{num}-1"
-            created_task_id = task_id
-            new_task = {
-                "id": task_id,
-                "phase": phase,
-                "title": f"Issue #{num}: {issue.get('title', '')}",
-                "description": (issue.get("body") or "") + f"\n\nReference: Closes #{num}",
-                "assignee": assignee,
-                "assigned_agent": assigned_agent,
-                "status": "approved",
-                "retry_count": 0,
-                "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-                "github_issue_number": num,
-                "created_at": now_ts,
-            }
-            record = {
-                "timestamp": now_ts,
-                "github_event": "issues",
-                "github_action": "labeled",
-                "issue_id": issue.get("id"),
-                "issue_number": num,
-                "task_id": task_id,
-                "action": "task_created",
-                "message": f"Created task {task_id} from GitHub issue #{num} labeled '{FACTORY_TASK_LABEL}' (phase: {phase}, assignee: {assignee or 'unassigned'})",
-            }
-            record_sync_history(data, new_task, record)
-            tasks.insert(0, new_task)
-            return True
-
-    if not ROADMAP_FILE.exists() or not roadmap_store.update_roadmap(ROADMAP_FILE, apply):
-        return False
-
-    if created_task_id:
-        msg = f"Linked GitHub issue #{num} to task {created_task_id}"
-        build_events.emit(PROJECT_ROOT, created_task_id, "webhook", msg)
-        roadmap_sync.sync_roadmap_to_github()
-        log(msg)
-
-        # Post bidirectional link comment to GitHub issue (stores task id in issue comment)
-        if is_new:
-            link_comment = build_link_comment(created_task_id, phase, assignee)
-            run_gh(["gh", "issue", "comment", str(num), "--repo", REPO, "-b", link_comment], runner=runner)
-
-    return True
-
-
-def handle_issue_unlabeled_factory_task(
-    issue: dict, payload: dict | None = None, runner=None,
-) -> bool:
-    """Unlink and pause task when 'factory/task' label is removed from an issue."""
-    num = issue.get("number")
-    if not isinstance(num, int) or num <= 0:
-        return False
-
-    affected_tasks: list[str] = []
-    now_ts = datetime.now(timezone.utc).isoformat()
-
-    def apply(data: dict) -> bool:
-        modified = False
-        for task in data.get("tasks", []):
-            if task_matches_issue(task, num):
-                task_id = task.get("id", "")
-                affected_tasks.append(task_id)
-                unlink_and_pause_task(task, num, f"Issue #{num} unlabeled '{FACTORY_TASK_LABEL}'")
-                if data.get("current_task_id") == task_id:
-                    data["current_task_id"] = None
-                record = {
-                    "timestamp": now_ts,
-                    "github_event": "issues",
-                    "github_action": "unlabeled",
-                    "issue_id": issue.get("id"),
-                    "issue_number": num,
-                    "task_id": task_id,
-                    "action": "task_unlinked_paused",
-                    "message": f"Issue #{num} unlabeled '{FACTORY_TASK_LABEL}': unlinked and paused task {task_id}",
-                }
-                record_sync_history(data, task, record)
-                modified = True
-        return modified
-
-    if not ROADMAP_FILE.exists() or not roadmap_store.update_roadmap(ROADMAP_FILE, apply):
-        return False
-
-    for tid in affected_tasks:
-        msg = f"Issue #{num} unlabeled: unlinked and paused task {tid}"
-        build_events.emit(PROJECT_ROOT, tid, "webhook", msg)
-        log(msg)
-
-    roadmap_sync.sync_roadmap_to_github()
-    return True
-
-
-def handle_issue_edited(
-    issue: dict, payload: dict | None = None, runner=None,
-) -> bool:
-    """Reconcile roadmap task when an issue is edited or assignees change."""
-    num = issue.get("number")
-    if not isinstance(num, int) or num <= 0:
-        return False
-
-    labels = label_names(issue)
-    if FACTORY_TASK_LABEL not in labels:
-        # If 'factory/task' is missing, ensure any existing link is unlinked & paused
-        return handle_issue_unlabeled_factory_task(issue, payload, runner=runner)
-
-    label_cfg = load_label_config()
-    phase = infer_phase_from_labels(labels, label_cfg)
-    assignee = extract_assignee(issue)
-    now_ts = datetime.now(timezone.utc).isoformat()
-    affected_tasks: list[str] = []
-
-    def apply(data: dict) -> bool:
-        tasks = data.get("tasks", [])
-        matched = [t for t in tasks if task_matches_issue(t, num)]
-        if not matched:
-            return False
-
-        for task in matched:
-            task_id = task.get("id", "")
-            affected_tasks.append(task_id)
-            task["title"] = f"Issue #{num}: {issue.get('title', '')}"
-            task["description"] = (issue.get("body") or "") + f"\n\nReference: Closes #{num}"
-            task["phase"] = phase
-            task["github_issue_number"] = num
-            task.pop("unlinked", None)
-            task.pop("unlinked_from_issue", None)
-            if task.get("status") == "paused":
-                task["status"] = "approved"
-                task.pop("paused_at", None)
-                task.pop("pause_reason", None)
-            if assignee:
-                task["assignee"] = assignee
-                if assignee in ("claude", "codex", "antigravity"):
-                    task["assigned_agent"] = assignee
-            record = {
-                "timestamp": now_ts,
-                "github_event": "issues",
-                "github_action": "edited",
-                "issue_id": issue.get("id"),
-                "issue_number": num,
-                "task_id": task_id,
-                "action": "task_reconciled",
-                "message": f"Reconciled task {task_id} from edited GitHub issue #{num}",
-            }
-            record_sync_history(data, task, record)
-        return True
+            changed, delivered = issue_sync.reconcile_issue(
+                data, issue, payload, load_label_config(),
+                lambda argv: run_gh(argv, runner=runner), REPO)
+        records.extend(data.get("history", [])[history_start:])
+        if delivered and key:
+            receipts.append(key)
+            del receipts[:-5000]
+            changed = True
+        return changed
 
     if not ROADMAP_FILE.exists():
         return False
-
-    success = roadmap_store.update_roadmap(ROADMAP_FILE, apply)
-    if not success and FACTORY_TASK_LABEL in labels:
-        # If no task was matched but issue has factory/task, create it
-        return handle_issue_labeled_factory_task(issue, payload, runner=runner)
-
-    for tid in affected_tasks:
-        msg = f"Issue #{num} edited: reconciled task {tid}"
-        build_events.emit(PROJECT_ROOT, tid, "webhook", msg)
-        log(msg)
-
-    roadmap_sync.sync_roadmap_to_github()
-    return True
-
-
-def handle_task_transition(
-    task_id: str, new_status: str,
-    commit_sha: str | None = None, pr_ref: str | None = None,
-    runner=None,
-) -> bool:
-    """Close linked issues after completion; verified tasks still await PR merge."""
-    if new_status not in ("done", "completed"):
-        return False
-
-    num: int | None = None
-    task_snapshot: dict | None = None
-    now_ts = datetime.now(timezone.utc).isoformat()
-
-    def apply(data: dict) -> bool:
-        nonlocal num, task_snapshot
-        task = next((t for t in data.get("tasks", []) if t.get("id") == task_id), None)
-        if not task or task.get("status") not in ("done", "completed"):
-            return False
-        num = task.get("github_issue_number")
-        if not num:
-            return False
-
-        # Guard against posting duplicate closure notifications for the same transition
-        if task.get(f"notified_{new_status}") or (new_status in ("done", "completed") and task.get("notified_completed")):
-            return False
-
-        task[f"notified_{new_status}"] = True
-        if new_status in ("done", "completed"):
-            task["notified_completed"] = True
-            if not task.get("closed_at"):
-                task["closed_at"] = now_ts
-
-        if commit_sha and not task.get("commit_sha"):
-            task["commit_sha"] = commit_sha
-        if pr_ref and not task.get("pr_number"):
-            task["pr_number"] = pr_ref
-
-        record = {
-            "timestamp": now_ts,
-            "github_event": "task_transition",
-            "github_action": new_status,
-            "issue_number": num,
-            "task_id": task_id,
-            "action": "task_transition_closed_issue",
-            "message": f"Task {task_id} transitioned to '{new_status}': summarized result and closed GitHub issue #{num}",
-        }
-        record_sync_history(data, task, record)
-        task_snapshot = dict(task)
-        return True
-
-    if not ROADMAP_FILE.exists() or not roadmap_store.update_roadmap(ROADMAP_FILE, apply):
-        return False
-
-    if num and task_snapshot:
-        comment = build_result_comment(task_snapshot, new_status)
-        log(f"Task {task_id} transitioned to '{new_status}': posting comment and closing Issue #{num}...")
-        run_gh(["gh", "issue", "comment", str(num), "--repo", REPO, "-b", comment], runner=runner)
-        run_gh(["gh", "issue", "close", str(num), "--repo", REPO], runner=runner)
-        run_gh(["gh", "issue", "edit", str(num), "--repo", REPO, "--remove-label", "in-progress,blocked"], runner=runner)
-
-        build_events.emit(PROJECT_ROOT, task_id, "webhook", f"GitHub issue #{num} closed after task {new_status}")
+    changed = roadmap_store.update_roadmap(ROADMAP_FILE, apply)
+    if changed:
         roadmap_sync.sync_roadmap_to_github()
-        return True
+        for record in records:
+            build_events.emit(PROJECT_ROOT, record["task_id"], "webhook", record.get("message", record["action"]))
+            try:
+                event_bus.publish("roadmap_sync", record)
+            except Exception:
+                pass
+    return delivered
 
-    return False
+
+def handle_issue_labeled_factory_task(issue: dict, payload: dict | None = None, runner=None) -> bool:
+    return reconcile_github_issue(issue, payload or {"action": "labeled", "label": {"name": FACTORY_TASK_LABEL}}, runner)
 
 
-def sync_tasks_to_issues(runner=None) -> int:
-    """Scan roadmap and sync any unnotified completed tasks to their linked GitHub issues."""
-    if not ROADMAP_FILE.exists():
-        return 0
-    try:
-        data = json.loads(ROADMAP_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return 0
+def handle_issue_unlabeled_factory_task(issue: dict, payload: dict | None = None, runner=None) -> bool:
+    return reconcile_github_issue(issue, payload or {"action": "unlabeled", "label": {"name": FACTORY_TASK_LABEL}}, runner)
 
+
+def handle_issue_edited(issue: dict, payload: dict | None = None, runner=None) -> bool:
+    return reconcile_github_issue(issue, payload or {"action": "edited"}, runner)
+
+
+def handle_task_transition(task_id: str, new_status: str,
+                           commit_sha: str | None = None, pr_ref: str | None = None,
+                           runner=None, close_on_verified: bool = False) -> bool:
+    if not task_id or new_status not in ("verified", "done", "completed"):
+        return False
     count = 0
-    for task in data.get("tasks", []):
-        task_id = task.get("id")
-        status = task.get("status")
-        num = task.get("github_issue_number")
-        if task_id and num and status in ("done", "completed"):
-            if not task.get(f"notified_{status}") and not (status in ("done", "completed") and task.get("notified_completed")):
-                if handle_task_transition(task_id, status, commit_sha=task.get("commit_sha"), runner=runner):
-                    count += 1
+
+    def apply(data):
+        nonlocal count
+        changed, count = issue_sync.sync_results(
+            data, lambda argv: run_gh(argv, runner=runner), REPO, close_on_verified,
+            task_id=task_id, new_status=new_status, commit_sha=commit_sha, pr_ref=pr_ref)
+        return changed
+
+    if ROADMAP_FILE.exists() and roadmap_store.update_roadmap(ROADMAP_FILE, apply):
+        roadmap_sync.sync_roadmap_to_github()
+        log(f"Task {task_id} '{new_status}': synchronized GitHub result")
+    return count > 0
+
+
+def sync_tasks_to_issues(runner=None, close_on_verified: bool = False) -> int:
+    count = 0
+
+    def apply(data):
+        nonlocal count
+        changed, count = issue_sync.sync_results(
+            data, lambda argv: run_gh(argv, runner=runner), REPO, close_on_verified)
+        return changed
+
+    if ROADMAP_FILE.exists() and roadmap_store.update_roadmap(ROADMAP_FILE, apply):
+        roadmap_sync.sync_roadmap_to_github()
     return count
 
 
@@ -479,14 +300,42 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 
         log(f"Received webhook event '{event_type}'")
 
+        if self.path in ("/log", "/logs", "/events/log"):
+            task_id = payload.get("task_id", "")
+            source = payload.get("source", "agent")
+            message = payload.get("message", "")
+            if message:
+                build_events.emit(PROJECT_ROOT, task_id, source, message)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+            return
+
         if self.path in ("/task/transition", "/tasks/transition"):
             task_id = payload.get("task_id", "")
             status = payload.get("status", "")
             commit_sha = payload.get("commit_sha")
             pr_ref = payload.get("pr_ref") or payload.get("pr_number")
-            success = handle_task_transition(task_id, status, commit_sha=commit_sha, pr_ref=pr_ref)
+            close_on_verified = payload.get("close_on_verified", False)
+            success = handle_task_transition(
+                task_id, status, commit_sha=commit_sha, pr_ref=pr_ref,
+                close_on_verified=close_on_verified,
+            )
+            try:
+                event_bus.publish("task_transition", {
+                    "task_id": task_id,
+                    "status": status,
+                    "commit_sha": commit_sha,
+                    "pr_ref": pr_ref,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
             self.send_response(200 if success else 400)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": success}).encode("utf-8"))
             return
@@ -494,21 +343,10 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
         if event_type == "ping":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(b'{"status":"pong"}')
             return
-
-        # Idempotency deduplication check for redelivered webhooks
-        dedupe_key = get_webhook_dedupe_key(payload, dict(self.headers))
-        if dedupe_key and is_webhook_duplicate(dedupe_key, DEDUPE_FILE, _processed_events):
-            log(f"Duplicate webhook event '{dedupe_key}' ignored.")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"ok":true,"duplicate":true}')
-            return
-        if dedupe_key:
-            record_webhook_processed(dedupe_key, DEDUPE_FILE, _processed_events)
 
         if event_type == "issues":
             action = payload.get("action", "")
@@ -524,23 +362,24 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 
             log(f"Issue #{num} ('{title}') action='{action}', label='{label_name}'")
 
-            if action == "closed":
-                log(f"Issue #{num} ('{title}') closed event! Synchronizing state...")
-                handle_issue_closed(num, issue.get("closed_at"))
-            elif issue.get("state") == "closed":
+            if (action == "closed" or (issue.get("state") != "closed" and
+                    (FACTORY_TASK_LABEL in issue_labels or
+                     (action == "unlabeled" and label_name == FACTORY_TASK_LABEL) or
+                     action in ("edited", "assigned", "unassigned")))):
+                try:
+                    success = reconcile_github_issue(issue, payload, headers=dict(self.headers))
+                except Exception as error:
+                    log(f"Issue sync failed: {error}")
+                    success = False
+                self.send_response(200 if success else 503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": success}).encode("utf-8"))
+                return
+
+            if issue.get("state") == "closed":
                 pass
-            elif action == "labeled" and label_name == FACTORY_TASK_LABEL:
-                log(f"Issue #{num} received '{FACTORY_TASK_LABEL}' label! Creating/linking roadmap task...")
-                handle_issue_labeled_factory_task(issue, payload)
-            elif action == "unlabeled" and label_name == FACTORY_TASK_LABEL:
-                log(f"Issue #{num} unlabeled '{FACTORY_TASK_LABEL}'! Unlinking and pausing task...")
-                handle_issue_unlabeled_factory_task(issue, payload)
-            elif action == "edited":
-                log(f"Issue #{num} edited! Reconciling roadmap task...")
-                handle_issue_edited(issue, payload)
-            elif action in ("assigned", "unassigned"):
-                log(f"Issue #{num} assignee updated! Reconciling roadmap task...")
-                handle_issue_edited(issue, payload)
             elif action == "labeled" and label_name == "approved":
                 if any(l in IGNORED_LABELS for l in issue_labels):
                     log(f"Issue #{num} ('{title}') has ignored label. Skipping app queue.")
@@ -549,9 +388,7 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
                     mark_task_approved(num)
                     trigger_issue_bot()
             elif action in ("opened", "reopened"):
-                if FACTORY_TASK_LABEL in issue_labels:
-                    handle_issue_labeled_factory_task(issue, payload)
-                elif any(l in IGNORED_LABELS for l in issue_labels):
+                if any(l in IGNORED_LABELS for l in issue_labels):
                     log(f"Issue #{num} ('{title}') has ignored label. Skipping issue_bot trigger.")
                 else:
                     trigger_issue_bot()
@@ -590,12 +427,68 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
 
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
+
     def do_GET(self):
+        import urllib.parse
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+
+        is_websocket = (
+            path in ("/ws", "/events/ws") or
+            path.endswith("/ws") or
+            self.headers.get("Upgrade", "").lower() == "websocket"
+        )
+        is_sse = (
+            path in ("/events", "/stream", "/events/stream", "/api/events") or
+            path.endswith("/events") or
+            path.endswith("/stream") or
+            "text/event-stream" in self.headers.get("Accept", "")
+        )
+
+        if is_websocket or is_sse:
+            types_list = query.get("types", query.get("type", []))
+            types_set = set()
+            for t in types_list:
+                for part in t.split(","):
+                    part = part.strip()
+                    if part:
+                        types_set.add(part)
+            if not types_set:
+                types_set = None
+
+            task_id = query.get("task_id", [None])[0]
+            filter_fn = None
+            if task_id:
+                filter_fn = lambda e: (
+                    e.get("data", {}).get("task_id") == task_id or
+                    e.get("type") == "roadmap_sync"
+                )
+
+            subscriber = event_bus.subscribe_queue(event_types=types_set, filter_fn=filter_fn)
+
+            if is_websocket:
+                initial = [("connected", {"status": "connected", "protocol": "websocket"})]
+                event_bus.handle_websocket_stream(self, subscriber, initial_events=initial)
+                return
+            else:
+                initial = [("connected", {"status": "connected", "protocol": "sse"})]
+                event_bus.handle_sse_stream(self, subscriber, initial_events=initial)
+                return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(b"Software Factory GitHub Webhook Listener is active\n")
 
@@ -604,6 +497,10 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 
 
 def run():
+    try:
+        event_bus.start_log_follower(PROJECT_ROOT)
+    except Exception:
+        pass
     port = 9097
     server_address = ("127.0.0.1", port)
     httpd = HTTPServer(server_address, GitHubWebhookHandler)

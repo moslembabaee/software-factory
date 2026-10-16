@@ -42,7 +42,71 @@ export function BuildMetricsPanel({ metrics }: { metrics: BuildMetrics }) {
           <dt>Retry rate</dt>
           <dd>{percent(metrics.retry_rate)}</dd>
         </div>
+        {metrics.prompt_tokens !== undefined && (
+          <div>
+            <dt>Prompt / output tokens</dt>
+            <dd>
+              {metrics.prompt_tokens.toLocaleString()} /{" "}
+              {metrics.completion_tokens?.toLocaleString()}
+            </dd>
+          </div>
+        )}
+        {metrics.prompt_cost_usd !== undefined && (
+          <div>
+            <dt>Prompt / output cost</dt>
+            <dd>
+              {usd(metrics.prompt_cost_usd)} /{" "}
+              {usd(metrics.completion_cost_usd ?? 0)}
+            </dd>
+          </div>
+        )}
+        {metrics.success_rate !== undefined && (
+          <div>
+            <dt>Attempt success rate</dt>
+            <dd>{percent(metrics.success_rate)}</dd>
+          </div>
+        )}
+        {metrics.p95_latency_seconds !== undefined && (
+          <div>
+            <dt>Provider latency p50 / p95</dt>
+            <dd>
+              {metrics.p50_latency_seconds?.toFixed(2)}s /{" "}
+              {metrics.p95_latency_seconds.toFixed(2)}s
+            </dd>
+          </div>
+        )}
       </dl>
+      {metrics.total_tasks_count !== undefined && (
+        <p>
+          Tasks: {metrics.total_tasks_count} · Active:{" "}
+          {metrics.active_tasks_count} · Pending: {metrics.pending_tasks_count}{" "}
+          · Completed: {metrics.completed_tasks_count} · Failed:{" "}
+          {metrics.failed_tasks_count} · Running agents:{" "}
+          {metrics.active_agent_count}
+        </p>
+      )}
+      {metrics.task_lifecycle_counts && (
+        <dl className="metric-grid" aria-label="Task lifecycle distribution">
+          {Object.entries(metrics.task_lifecycle_counts).map(
+            ([status, count]) => (
+              <div key={status}>
+                <dt>{status.replaceAll("_", " ")}</dt>
+                <dd>{count}</dd>
+              </div>
+            ),
+          )}
+        </dl>
+      )}
+      {metrics.successful_attempts !== undefined && (
+        <p>
+          Successful: {metrics.successful_attempts} · Failed:{" "}
+          {metrics.failed_attempts} · Awaiting outcome:{" "}
+          {metrics.pending_attempts}. Success and failure rates use resolved
+          attempts. Provider average:{" "}
+          {metrics.avg_agent_latency_seconds?.toFixed(2)}s · Verification
+          average: {metrics.avg_verification_latency_seconds?.toFixed(2)}s.
+        </p>
+      )}
       <p>
         Attempts: {metrics.attempt_count}. Retry rate counts attempts after the
         first for each task.
@@ -62,6 +126,9 @@ export function BuildMetricsPanel({ metrics }: { metrics: BuildMetrics }) {
                 <th scope="col">Estimated cost</th>
                 <th scope="col">Avg. latency</th>
                 <th scope="col">Failures</th>
+                <th scope="col">Success / pending</th>
+                <th scope="col">Prompt / output cost</th>
+                <th scope="col">Provider p95</th>
               </tr>
             </thead>
             <tbody>
@@ -73,6 +140,57 @@ export function BuildMetricsPanel({ metrics }: { metrics: BuildMetrics }) {
                   <td>{usd(agent.total_cost_usd)}</td>
                   <td>{agent.avg_latency_seconds.toFixed(2)}s</td>
                   <td>{agent.failed_attempts}</td>
+                  <td>
+                    {agent.success_rate === undefined
+                      ? "—"
+                      : percent(agent.success_rate)}{" "}
+                    / {agent.pending_attempts ?? "—"}
+                  </td>
+                  <td>
+                    {agent.prompt_cost_usd === undefined
+                      ? "—"
+                      : `${usd(agent.prompt_cost_usd)} / ${usd(agent.completion_cost_usd ?? 0)}`}
+                  </td>
+                  <td>
+                    {agent.p95_latency_seconds === undefined
+                      ? "—"
+                      : `${agent.p95_latency_seconds.toFixed(2)}s`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {metrics.models && metrics.models.length > 0 && (
+        <div className="metrics-table-scroll">
+          <table className="metrics-table">
+            <caption>Model performance</caption>
+            <thead>
+              <tr>
+                <th scope="col">Agent / reported model</th>
+                <th scope="col">Attempts</th>
+                <th scope="col">Estimated cost</th>
+                <th scope="col">Provider average / p95</th>
+                <th scope="col">Successful / failed / pending</th>
+              </tr>
+            </thead>
+            <tbody>
+              {metrics.models.map((model) => (
+                <tr key={JSON.stringify([model.agent, model.model])}>
+                  <th scope="row">
+                    {model.agent} / {model.model}
+                  </th>
+                  <td>{model.attempt_count}</td>
+                  <td>{usd(model.total_cost_usd)}</td>
+                  <td>
+                    {model.avg_agent_latency_seconds?.toFixed(2)}s /{" "}
+                    {model.p95_latency_seconds?.toFixed(2)}s
+                  </td>
+                  <td>
+                    {model.successful_attempts} / {model.failed_attempts} /{" "}
+                    {model.pending_attempts}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -208,6 +326,24 @@ export function BuildTaskCard({
             {" · "}
             {task.telemetry.duration_seconds.toFixed(2)}s total
           </p>
+          <p>
+            Prompt: {task.telemetry.tokens.prompt.toLocaleString()} tokens ·
+            Output: {task.telemetry.tokens.completion.toLocaleString()} tokens
+            {task.telemetry.prompt_cost_usd !== undefined && (
+              <>
+                {" "}
+                · Cost split: {usd(task.telemetry.prompt_cost_usd)} /{" "}
+                {usd(task.telemetry.completion_cost_usd ?? 0)}
+              </>
+            )}
+          </p>
+          {task.telemetry.successful_attempts !== undefined && (
+            <p>
+              Successful: {task.telemetry.successful_attempts} · Failed:{" "}
+              {task.telemetry.failed_attempts} · Awaiting outcome:{" "}
+              {task.telemetry.pending_attempts}
+            </p>
+          )}
           <p>
             Agent: {task.telemetry.agent_duration_seconds.toFixed(2)}s ·
             Verification:{" "}

@@ -51,6 +51,23 @@ describe("worker reflection contract", () => {
       symbol: "TS2322",
     });
     expect(analysis.summary).toContain("TS2322");
+    expect(analysis.changed_files).toEqual([]);
+    expect(analysis.related_files).toEqual([]);
+    expect(analysis.diff_excerpt).toBe("");
+    expect(
+      FailureAnalysisSchema.parse({
+        ...analysis,
+        changed_files: ["src/worker.ts"],
+        related_files: ["src/worker.ts"],
+        diff_excerpt: "@@ -4 +4 @@\n-old\n+fixed",
+      }).related_files,
+    ).toEqual(["src/worker.ts"]);
+    expect(
+      FailureAnalysisSchema.safeParse({
+        ...analysis,
+        diff_excerpt: "x".repeat(4001),
+      }).success,
+    ).toBe(false);
     expect(
       FailureAnalysisSchema.safeParse({
         ...analysis,

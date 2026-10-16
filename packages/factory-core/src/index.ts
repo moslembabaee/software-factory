@@ -84,6 +84,8 @@ export {
   TaskTelemetrySchema,
   BuildMetricsBudgetSchema,
   BuildMetricsSchema,
+  AgentMetricsSchema,
+  ModelMetricsSchema,
   canApproveTask,
 } from "./build.js";
 export type {
@@ -95,6 +97,8 @@ export type {
   TaskBudget,
   TaskTelemetry,
   BuildMetrics,
+  AgentMetrics,
+  ModelMetrics,
   BuildMetricsBudget,
 } from "./build.js";
 export {
@@ -110,6 +114,13 @@ export {
   ReviewEvaluationSchema,
   ConsensusPolicySchema,
   ConsensusReviewGateResultSchema,
+  MergeStateStatusSchema,
+  ConflictDetailsSchema,
+  RebaseStatusSchema,
+  RebaseResultSchema,
+  MergeQueueStatusSchema,
+  MergeQueueEntrySchema,
+  MergeQueuePolicySchema,
   generateBranchName,
   formatPullRequestBody,
   canAutoMerge,
@@ -119,6 +130,15 @@ export {
   evaluateLintReview,
   dispatchParallelReviews,
   evaluateConsensusReviewGate,
+  parseConflictFilesFromGitOutput,
+  detectConflict,
+  isPrBehindBase,
+  canAutoRebase,
+  sortMergeQueue,
+  getNextMergeQueueCandidate,
+  reconcileMergeQueueStep,
+  canMergeAfterRebase,
+  attemptAutomatedRebase,
 } from "./pr-lifecycle.js";
 export type {
   PullRequestStatus,
@@ -133,6 +153,15 @@ export type {
   ReviewEvaluation,
   ConsensusPolicy,
   ConsensusReviewGateResult,
+  MergeStateStatus,
+  ConflictDetails,
+  RebaseStatus,
+  RebaseResult,
+  MergeQueueStatus,
+  MergeQueueEntry,
+  MergeQueuePolicy,
   DiffFileInput,
   ReviewInput,
+  GitCommandExecutor,
+  VerificationExecutor,
 } from "./pr-lifecycle.js";

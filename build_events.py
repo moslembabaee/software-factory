@@ -14,6 +14,11 @@ def emit(root: Path, task_id: str, source: str, message: str):
     with (directory / "build.jsonl").open("a", encoding="utf-8") as output:
         fcntl.flock(output, fcntl.LOCK_EX)
         output.write(json.dumps(record) + "\n")
+    try:
+        import event_bus
+        event_bus.publish("log", record, event_id=record["id"])
+    except Exception:
+        pass
 
 
 def tail(root: Path, task_ids: set[str]) -> list[dict]:

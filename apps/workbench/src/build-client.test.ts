@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   canApproveTask,
+  BuildMetricsSchema,
   type BuildSnapshot,
   type BuildTask,
 } from "@software-factory/factory-core";
@@ -43,6 +44,70 @@ class MockStream extends EventTarget implements BuildEventSource {
 }
 
 describe("Build workbench", () => {
+  it("renders lifecycle counts, token splits and model latency with escaped labels", () => {
+    const performance = {
+      attempt_count: 2,
+      failed_attempts: 1,
+      successful_attempts: 0,
+      pending_attempts: 1,
+      success_rate: 0,
+      failure_rate: 1,
+      retry_rate: 0.5,
+      total_tokens: 1200,
+      prompt_tokens: 1000,
+      completion_tokens: 200,
+      total_cost_usd: 0.006,
+      prompt_cost_usd: 0.002,
+      completion_cost_usd: 0.004,
+      avg_latency_seconds: 3,
+      avg_agent_latency_seconds: 2,
+      avg_verification_latency_seconds: 1,
+      p50_latency_seconds: 1,
+      p95_latency_seconds: 3,
+      min_latency_seconds: 1,
+      max_latency_seconds: 3,
+      failure_modes: { timeout: 1 },
+    };
+    const metrics = BuildMetricsSchema.parse({
+      ...performance,
+      agents: [{ agent: "codex", ...performance }],
+      models: [
+        { agent: "codex", model: "<script>model</script>", ...performance },
+      ],
+      budget: { total_cap_usd: null, total_spent_usd: 0.006, exceeded: false },
+      total_tasks_count: 3,
+      active_tasks_count: 1,
+      pending_tasks_count: 1,
+      completed_tasks_count: 1,
+      failed_tasks_count: 0,
+      active_agent_count: 1,
+      task_lifecycle_counts: {
+        pending: 1,
+        completed: 1,
+        ready_for_verification: 1,
+      },
+    });
+    const markup = renderToStaticMarkup(
+      createElement(BuildMetricsPanel, { metrics }),
+    );
+    expect(markup).toContain("Prompt / output tokens");
+    expect(markup).toContain("$0.002000 / $0.004000");
+    expect(markup).toContain("Awaiting outcome: 1");
+    expect(markup).toContain("Provider latency p50 / p95");
+    expect(markup).toContain("1.00s / 3.00s");
+    expect(markup).toContain("Task lifecycle distribution");
+    expect(markup).toContain("Model performance");
+    expect(markup).toContain("&lt;script&gt;model&lt;/script&gt;");
+    expect(markup).not.toContain("<script>");
+    expect(
+      BuildMetricsSchema.safeParse({ ...metrics, success_rate: 2 }).success,
+    ).toBe(false);
+    expect(
+      BuildMetricsSchema.safeParse({ ...metrics, p95_latency_seconds: -1 })
+        .success,
+    ).toBe(false);
+  });
+
   it("renders costs, latency, failure charts and budget exhaustion accessibly", () => {
     const markup = renderToStaticMarkup(
       createElement(BuildMetricsPanel, {

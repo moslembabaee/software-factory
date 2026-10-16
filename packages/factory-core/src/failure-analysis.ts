@@ -35,6 +35,9 @@ export const FailureAnalysisSchema = z.strictObject({
   raw_tail: z.string(),
   summary: z.string(),
   remediation_hint: z.string(),
+  changed_files: z.array(z.string()).max(60).optional(),
+  related_files: z.array(z.string()).max(60).optional(),
+  diff_excerpt: z.string().max(4000).optional(),
 });
 
 export type DiagnosticCategory = z.infer<typeof DiagnosticCategorySchema>;

@@ -19,6 +19,17 @@ import {
   evaluateLintReview,
   dispatchParallelReviews,
   evaluateConsensusReviewGate,
+  MergeStateStatusSchema,
+  MergeQueueStatusSchema,
+  ConflictDetailsSchema,
+  RebaseResultSchema,
+  MergeQueueEntrySchema,
+  detectConflicts,
+  needsRebase,
+  createMergeQueueEntry,
+  prioritizeMergeQueue,
+  evaluateRebaseOutcome,
+  formatConflictComment,
 } from "../pr-lifecycle.js";
 
 describe("pr-lifecycle domain logic and schemas", () => {
@@ -664,5 +675,245 @@ describe("review gate evidence and deadlines", () => {
     expect(
       evaluateSecurityReview("import { x } from '../../utils.js';").passed,
     ).toBe(true);
+  });
+});
+
+describe("automated PR merge queue, conflict detection, and rebasing", () => {
+  const passingGate = evaluateConsensusReviewGate([
+    evaluateSecurityReview("const safe = 1;"),
+    evaluateLintReview("const safe = 1;"),
+  ]);
+
+  it("canAutoMerge respects mergeStateStatus and conflicted/rebasing states", () => {
+    // When clean, can merge
+    expect(canAutoMerge("passed", "open", passingGate, "clean")).toBe(true);
+    expect(canAutoMerge("passed", "open", passingGate, "CLEAN")).toBe(true);
+
+    // Behind, dirty, blocked, draft should reject auto merge
+    expect(canAutoMerge("passed", "open", passingGate, "behind")).toBe(false);
+    expect(canAutoMerge("passed", "open", passingGate, "dirty")).toBe(false);
+    expect(canAutoMerge("passed", "open", passingGate, "blocked")).toBe(false);
+    expect(canAutoMerge("passed", "open", passingGate, "draft")).toBe(false);
+
+    // Conflicted, rebasing, rebase_failed PR statuses should reject auto merge
+    expect(canAutoMerge("passed", "conflicted", passingGate, "clean")).toBe(false);
+    expect(canAutoMerge("passed", "rebasing", passingGate, "clean")).toBe(false);
+    expect(canAutoMerge("passed", "rebase_failed", passingGate, "clean")).toBe(false);
+  });
+
+  it("validates MergeStateStatusSchema, MergeQueueStatusSchema, ConflictDetailsSchema, and RebaseResultSchema", () => {
+    expect(MergeStateStatusSchema.parse("clean")).toBe("clean");
+    expect(MergeStateStatusSchema.parse("dirty")).toBe("dirty");
+    expect(MergeStateStatusSchema.parse("behind")).toBe("behind");
+    expect(() => MergeStateStatusSchema.parse("invalid")).toThrow();
+
+    expect(MergeQueueStatusSchema.parse("queued")).toBe("queued");
+    expect(MergeQueueStatusSchema.parse("ready_to_merge")).toBe("ready_to_merge");
+    expect(MergeQueueStatusSchema.parse("conflicted")).toBe("conflicted");
+
+    const conflict = {
+      hasConflict: true,
+      conflictingFiles: ["src/index.ts", "packages/core/app.ts"],
+      baseBranch: "main",
+      branch: "factory/t-1",
+      baseSha: "1111111111111111111111111111111111111111",
+      headSha: "2222222222222222222222222222222222222222",
+      error: "Conflict in 2 files",
+    };
+    expect(ConflictDetailsSchema.parse(conflict)).toEqual(conflict);
+
+    const rebase = {
+      success: true,
+      rebasedSha: "3333333333333333333333333333333333333333",
+      baseSha: "1111111111111111111111111111111111111111",
+      conflicts: [],
+      reverified: true,
+      verificationPassed: true,
+    };
+    expect(RebaseResultSchema.parse(rebase)).toEqual({
+      ...rebase,
+      error: undefined,
+    });
+  });
+
+  it("detects conflicts from merge-tree, rebase output, and porcelain status", () => {
+    // 1. Output with CONFLICT (content)
+    const mergeTreeOutput = `
+100644 b1b716105590454bfc4c0247f193a04088f39c7f 1\tsrc/file1.txt
+100644 a7453f07505c42ea8d6fdda75fa91710c81c53d6 2\tsrc/file1.txt
+100644 ba2906d0666cf726c7eaadd2cd3db615dedfdf3a 3\tsrc/file1.txt
+
+Auto-merging src/file1.txt
+CONFLICT (content): Merge conflict in src/file1.txt
+`;
+    const result1 = detectConflicts(mergeTreeOutput, "main", "factory/t-1");
+    expect(result1.hasConflict).toBe(true);
+    expect(result1.conflictingFiles).toEqual(["src/file1.txt"]);
+    expect(result1.error).toContain("Merge conflict detected in 1 file(s)");
+
+    // 2. Porcelain status with unmerged entries
+    const porcelainOutput = `
+UU packages/core/src/index.ts
+AA packages/core/src/models.ts
+M  packages/core/src/clean.ts
+`;
+    const result2 = detectConflicts(porcelainOutput, "main", "factory/t-2");
+    expect(result2.hasConflict).toBe(true);
+    expect(result2.conflictingFiles).toEqual([
+      "packages/core/src/index.ts",
+      "packages/core/src/models.ts",
+    ]);
+
+    // 3. Clean output without conflicts
+    const cleanOutput = `
+Auto-merging src/utils.ts
+Merge made by the 'ort' strategy.
+`;
+    const cleanResult = detectConflicts(cleanOutput, "main", "factory/t-clean");
+    expect(cleanResult.hasConflict).toBe(false);
+    expect(cleanResult.conflictingFiles).toEqual([]);
+    expect(cleanResult.error).toBeUndefined();
+
+    // 4. Raw diff conflict markers
+    const markerOutput = `
+<<<<<<< HEAD
+const a = 1;
+=======
+const a = 2;
+>>>>>>> feature
+`;
+    const markerResult = detectConflicts(markerOutput, "main", "factory/t-markers");
+    expect(markerResult.hasConflict).toBe(true);
+  });
+
+  it("needsRebase correctly determines when a PR is behind base branch", () => {
+    const shaA = "a".repeat(40);
+    const shaB = "b".repeat(40);
+
+    expect(needsRebase(shaA, shaB)).toBe(true);
+    expect(needsRebase(shaA, shaA)).toBe(false);
+    expect(needsRebase(shaA, shaA, "behind")).toBe(true);
+    expect(needsRebase(shaA, shaA, "dirty")).toBe(true);
+    expect(needsRebase(shaA, shaA, "clean")).toBe(false);
+  });
+
+  it("manages and prioritizes the merge queue correctly", () => {
+    const entry1 = createMergeQueueEntry({
+      taskId: "T-001",
+      prNumber: 101,
+      branch: "factory/t-001",
+      baseBranch: "main",
+      commitSha: "1".repeat(40),
+      queuedAt: "2026-10-16T10:00:00Z",
+    });
+
+    const entry2 = createMergeQueueEntry({
+      taskId: "T-002",
+      prNumber: 102,
+      branch: "factory/t-002",
+      baseBranch: "main",
+      commitSha: "2".repeat(40),
+      queuedAt: "2026-10-16T10:05:00Z",
+    });
+
+    const entry3: typeof entry1 = {
+      ...entry2,
+      taskId: "T-003",
+      prNumber: 103,
+      status: "ready_to_merge",
+      queuedAt: "2026-10-16T10:10:00Z",
+    };
+
+    const entry4: typeof entry1 = {
+      ...entry1,
+      taskId: "T-004",
+      prNumber: 104,
+      status: "rebasing",
+      queuedAt: "2026-10-16T09:50:00Z",
+    };
+
+    expect(entry1.status).toBe("queued");
+    expect(entry1.attempts).toBe(0);
+    expect(MergeQueueEntrySchema.parse(entry1)).toEqual(entry1);
+
+    const sorted = prioritizeMergeQueue([entry1, entry2, entry3, entry4]);
+    expect(sorted.map((e) => e.taskId)).toEqual([
+      "T-003", // ready_to_merge
+      "T-004", // rebasing
+      "T-001", // queued (earlier queuedAt)
+      "T-002", // queued (later queuedAt)
+    ]);
+  });
+
+  it("evaluates rebase outcomes and updates queue entry state", () => {
+    const entry = createMergeQueueEntry({
+      taskId: "T-001",
+      prNumber: 101,
+      branch: "factory/t-001",
+      baseBranch: "main",
+      commitSha: "1".repeat(40),
+    });
+
+    // 1. Successful rebase with passing reverification
+    const passResult = evaluateRebaseOutcome(entry, {
+      success: true,
+      rebasedSha: "newsha123",
+      conflicts: [],
+      reverified: true,
+      verificationPassed: true,
+    });
+    expect(passResult.status).toBe("ready_to_merge");
+    expect(passResult.attempts).toBe(1);
+    expect(passResult.rebasedCommitSha).toBe("newsha123");
+    expect(passResult.verifiedAt).toBeDefined();
+
+    // 2. Successful rebase awaiting reverification
+    const pendingVerif = evaluateRebaseOutcome(entry, {
+      success: true,
+      rebasedSha: "newsha123",
+      conflicts: [],
+      reverified: false,
+    });
+    expect(pendingVerif.status).toBe("verifying");
+    expect(pendingVerif.attempts).toBe(1);
+
+    // 3. Rebase with conflicts
+    const conflictResult = evaluateRebaseOutcome(entry, {
+      success: false,
+      conflicts: ["src/app.ts"],
+      reverified: false,
+      error: "Conflict in src/app.ts",
+    });
+    expect(conflictResult.status).toBe("conflicted");
+    expect(conflictResult.conflicts).toEqual(["src/app.ts"]);
+    expect(conflictResult.error).toContain("Conflict");
+
+    // 4. Failed reverification
+    const failResult = evaluateRebaseOutcome(entry, {
+      success: false,
+      conflicts: [],
+      reverified: true,
+      verificationPassed: false,
+      error: "Test suite failed",
+    });
+    expect(failResult.status).toBe("failed");
+    expect(failResult.error).toBe("Test suite failed");
+  });
+
+  it("formats informative PR conflict comments", () => {
+    const conflict = detectConflicts(
+      "CONFLICT (content): Merge conflict in src/core.ts\nCONFLICT (content): Merge conflict in src/api.ts",
+      "main",
+      "factory/t-100",
+    );
+    const comment = formatConflictComment(conflict);
+
+    expect(comment).toContain("### ⚠️ Autonomous PR Conflict Detected");
+    expect(comment).toContain("`main`");
+    expect(comment).toContain("`factory/t-100`");
+    expect(comment).toContain("- `src/api.ts`");
+    expect(comment).toContain("- `src/core.ts`");
+    expect(comment).toContain("<!-- factory-conflict-base: main -->");
+    expect(comment).toContain("<!-- factory-conflict-branch: factory/t-100 -->");
   });
 });

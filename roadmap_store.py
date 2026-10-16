@@ -48,8 +48,23 @@ def save_roadmap(path: Path, snapshot: dict):
                         incoming[task["id"]][key] = task[key]
                     else:
                         incoming[task["id"]].pop(key, None)
+                # If a task is actively claimed (latest's current_task_id), the
+                # orchestrator's status/attempt fields must survive the snapshot.
+                # This prevents issue_bot's stale copy from reverting in_progress.
+                if latest.get("current_task_id") == task["id"]:
+                    for key in ("status", "started_at"):
+                        if key in task:
+                            incoming[task["id"]][key] = task[key]
+        # Preserve orchestrator state: issue_bot's stale snapshot must not
+        # un-claim an active task.  The orchestrator's atomic lock ensures
+        # serialized writers; if latest has a current_task_id, the orchestrator
+        # is actively owning it and the snapshot has no right to clear it.
+        snapshot["current_task_id"] = latest.get("current_task_id") or                                         snapshot.get("current_task_id")
         latest.update(snapshot)
         latest["tasks"] = list(incoming.values())
+        # Orchestrator's field is definitive — reassert after the snapshot merge.
+        if latest["current_task_id"] != snapshot["current_task_id"]:
+            latest["current_task_id"] = snapshot["current_task_id"]
         if receipts:
             latest["ask_intakes"] = receipts
         if any(task.get("closed_at") and task["id"] == latest.get("current_task_id")

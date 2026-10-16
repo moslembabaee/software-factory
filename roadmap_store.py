@@ -35,10 +35,15 @@ def save_roadmap(path: Path, snapshot: dict):
         # Intake receipts are immutable. Preserve concurrent acceptances even
         # when an orchestrator saves a snapshot taken before the Ask write.
         receipts = {**snapshot.get("ask_intakes", {}), **latest.get("ask_intakes", {})}
+        sync_events = list(dict.fromkeys([*snapshot.get("github_sync_events", []),
+                                          *latest.get("github_sync_events", [])]))[-5000:]
+        sync_history = latest.get("sync_history", [])
+        history = latest.get("history", [])
         incoming = {task["id"]: task for task in snapshot.get("tasks", [])}
         for task in latest.get("tasks", []):
             if (task.get("closed_at") or task["id"] not in incoming or
-                    task.get("build_approval") != incoming[task["id"]].get("build_approval")):
+                    task.get("build_approval") != incoming[task["id"]].get("build_approval") or
+                    task.get("sync_history") != incoming[task["id"]].get("sync_history")):
                 incoming[task["id"]] = task
             else:
                 # These fields belong to the runtime/dashboard atomic writers.
@@ -50,9 +55,15 @@ def save_roadmap(path: Path, snapshot: dict):
                         incoming[task["id"]].pop(key, None)
         latest.update(snapshot)
         latest["tasks"] = list(incoming.values())
+        if sync_events:
+            latest["github_sync_events"] = sync_events
+        if sync_history:
+            latest["sync_history"] = sync_history
+            latest["history"] = history
         if receipts:
             latest["ask_intakes"] = receipts
-        if any(task.get("closed_at") and task["id"] == latest.get("current_task_id")
+        if any((task.get("closed_at") or (task.get("unlinked") and task.get("status") == "paused"))
+               and task["id"] == latest.get("current_task_id")
                for task in latest["tasks"]):
             latest["current_task_id"] = None
         return True

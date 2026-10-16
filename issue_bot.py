@@ -26,6 +26,7 @@ from issue_lifecycle import (
     build_link_comment,
     build_result_comment,
     extract_assignee,
+    extract_task_id_from_issue,
     infer_phase_from_labels,
     issue_number_for_task,
     label_names,
@@ -35,6 +36,7 @@ from issue_lifecycle import (
     unlink_and_pause_task,
 )
 import roadmap_store
+import issue_sync
 
 PROJECT_ROOT = Path("/root/projects/software-factory").resolve()
 ROADMAP_FILE = PROJECT_ROOT / "ROADMAP.json"
@@ -92,17 +94,19 @@ def load_maintainers() -> dict:
     return {
         "authorized_approvers": ["moslembabaee"],
         "approval_keywords": ["/approve", "LGTM", "approved"],
-        "auto_triage": true,
+        "auto_triage": True,
     }
 
 
-def load_roadmap() -> dict:
-    with open(ROADMAP_FILE, "r", encoding="utf-8") as f:
+def load_roadmap(roadmap_file: Path | None = None) -> dict:
+    target = roadmap_file or ROADMAP_FILE
+    with open(target, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_roadmap(data: dict):
-    roadmap_store.save_roadmap(ROADMAP_FILE, data)
+def save_roadmap(data: dict, roadmap_file: Path | None = None):
+    target = roadmap_file or ROADMAP_FILE
+    roadmap_store.save_roadmap(target, data)
     try:
         import roadmap_sync
         roadmap_sync.sync_roadmap_to_github()
@@ -112,7 +116,7 @@ def save_roadmap(data: dict):
 
 def sync_closed_issues(roadmap: dict, runner=run_cmd) -> bool:
     endpoint = f"repos/{REPO}/issues?state=closed&per_page=100"
-    code, out = runner(f"gh api --paginate {shlex.quote(endpoint)}")
+    code, out = runner(f"gh api --paginate --slurp {shlex.quote(endpoint)}")
     if code != 0:
         log(f"Error fetching closed issues: {out}")
         return False
@@ -147,47 +151,15 @@ def sync_closed_issues(roadmap: dict, runner=run_cmd) -> bool:
     return modified
 
 
-def sync_task_transitions(roadmap: dict, runner=run_cmd) -> bool:
-    """Close linked issues only after task completion; verified tasks await PR merge."""
-    modified = False
-    now_ts = datetime.now(timezone.utc).isoformat()
-    for task in roadmap.get("tasks", []):
-        num = issue_number_for_task(task)
-        if not num:
-            continue
-        status = task.get("status")
-        if status in ("done", "completed"):
-            if not task.get(f"notified_{status}") and not (status in ("done", "completed") and task.get("notified_completed")):
-                task[f"notified_{status}"] = True
-                if status in ("done", "completed"):
-                    task["notified_completed"] = True
-                    if not task.get("closed_at"):
-                        task["closed_at"] = now_ts
-                task_id = task.get("id", "")
-                comment = build_result_comment(task, status)
-                log(f"Task {task_id} is '{status}': posting comment and closing Issue #{num}...")
-                runner(f'gh issue comment {num} --repo {REPO} -b {shlex.quote(comment)}')
-                runner(f'gh issue close {num} --repo {REPO}')
-                runner(f'gh issue edit {num} --repo {REPO} --remove-label "in-progress,blocked"')
-
-                record = {
-                    "timestamp": now_ts,
-                    "github_event": "task_transition",
-                    "github_action": status,
-                    "issue_number": num,
-                    "task_id": task_id,
-                    "action": "task_transition_closed_issue",
-                    "message": f"Task {task_id} transitioned to '{status}': summarized result and closed GitHub issue #{num}",
-                }
-                record_sync_history(roadmap, task, record)
-                build_events.emit(PROJECT_ROOT, task_id, "webhook", record["message"])
-                modified = True
-    return modified
+def sync_task_transitions(roadmap: dict, runner=run_cmd, close_on_verified: bool = False) -> bool:
+    """Shared result delivery; only successful GitHub writes are acknowledged."""
+    changed, _ = issue_sync.sync_results(roadmap, runner, REPO, close_on_verified)
+    return changed
 
 
-def fetch_open_issues() -> list:
-    cmd = f'gh issue list --repo {REPO} --state open --json id,number,title,body,author,assignees,labels,comments,updatedAt,createdAt'
-    code, out = run_cmd(cmd)
+def fetch_open_issues(runner=run_cmd) -> list:
+    cmd = f'gh issue list --repo {REPO} --state open --limit 1000 --json id,number,title,body,author,assignees,labels,comments,updatedAt,createdAt'
+    code, out = runner(cmd)
     if code == 0:
         try:
             return json.loads(out)
@@ -281,13 +253,15 @@ def process_issues():
     maintainers_cfg = load_maintainers()
     label_cfg = maintainers_cfg.get("label_config", {})
 
-    roadmap = load_roadmap()
-    closed_modified = sync_closed_issues(roadmap)
-    transitions_modified = sync_task_transitions(roadmap)
-    if closed_modified or transitions_modified:
-        save_roadmap(roadmap)
-        roadmap = load_roadmap()
+    def sync_existing(data):
+        closed = sync_closed_issues(data, runner=run_cmd)
+        transitions = sync_task_transitions(data, runner=run_cmd)
+        return closed or transitions
 
+    if roadmap_store.update_roadmap(ROADMAP_FILE, sync_existing):
+        import roadmap_sync
+        roadmap_sync.sync_roadmap_to_github()
+    roadmap = load_roadmap()
     issues = fetch_open_issues()
     if not issues:
         return
@@ -303,117 +277,30 @@ def process_issues():
             continue
         labels = label_names(issue)
 
-        ignored_match = next((l for l in labels if l in IGNORED_LABELS), None)
-        if ignored_match:
-            log(f"Skipping Issue #{num} ('{title}') - ignored label: '{ignored_match}'")
-            continue
-
         task_id = f"T-ISSUE-{num}"
         matching_tasks = [
             t for t in roadmap["tasks"]
             if task_matches_issue(t, num)
         ]
 
-        # 1. Handle issue labeled 'factory/task'
-        if FACTORY_TASK_LABEL in labels:
-            phase = infer_phase_from_labels(labels, label_cfg)
-            assignee = extract_assignee(issue)
-            assigned_agent = assignee if assignee in ("claude", "codex", "antigravity") else "claude"
+        # Both intake paths use the same matching, edit and unlink rules.
+        if FACTORY_TASK_LABEL in labels or any(t.get("factory_issue_sync") for t in roadmap["tasks"]
+                                                  if task_matches_issue(t, num, include_unlinked=True)):
+            def reconcile(data):
+                changed, delivered = issue_sync.reconcile_issue(
+                    data, issue, {"action": "poll"}, label_cfg, run_cmd, REPO)
+                if not delivered:
+                    log(f"Issue #{num}: GitHub link delivery pending; will retry")
+                return changed
 
-            if matching_tasks:
-                # Reconcile existing task
-                for t in matching_tasks:
-                    changed = False
-                    if t.get("phase") != phase:
-                        t["phase"] = phase
-                        changed = True
-                    if t.get("assignee") != assignee:
-                        t["assignee"] = assignee
-                        if assignee in ("claude", "codex", "antigravity"):
-                            t["assigned_agent"] = assignee
-                        changed = True
-                    if t.get("unlinked"):
-                        t["github_issue_number"] = num
-                        t.pop("unlinked", None)
-                        t.pop("unlinked_from_issue", None)
-                        changed = True
-                    if t.get("status") == "paused":
-                        t["status"] = "approved"
-                        t.pop("paused_at", None)
-                        t.pop("pause_reason", None)
-                        changed = True
-                    if changed:
-                        record = {
-                            "timestamp": now_ts,
-                            "github_event": "issues",
-                            "github_action": "sync",
-                            "issue_id": issue.get("id"),
-                            "issue_number": num,
-                            "task_id": t["id"],
-                            "action": "task_reconciled",
-                            "message": f"Reconciled task {t['id']} from GitHub issue #{num} labeled '{FACTORY_TASK_LABEL}'",
-                        }
-                        record_sync_history(roadmap, t, record)
-                        build_events.emit(PROJECT_ROOT, t["id"], "webhook", record["message"])
-                        roadmap_modified = True
-                        log(f"Reconciled existing task {t['id']} for Issue #{num}")
-            else:
-                # Create new roadmap task with bidirectional link
-                new_task = {
-                    "id": task_id,
-                    "phase": phase,
-                    "title": f"Issue #{num}: {title}",
-                    "description": (issue.get("body") or "") + f"\n\nReference: Closes #{num}",
-                    "assignee": assignee,
-                    "assigned_agent": assigned_agent,
-                    "status": "approved",
-                    "retry_count": 0,
-                    "verification_cmd": "cd /root/projects/software-factory && npm run typecheck && npm test",
-                    "github_issue_number": num,
-                    "created_at": now_ts,
-                }
-                record = {
-                    "timestamp": now_ts,
-                    "github_event": "issues",
-                    "github_action": "labeled",
-                    "issue_id": issue.get("id"),
-                    "issue_number": num,
-                    "task_id": task_id,
-                    "action": "task_created",
-                    "message": f"Created task {task_id} from GitHub issue #{num} labeled '{FACTORY_TASK_LABEL}' (phase: {phase}, assignee: {assignee or 'unassigned'})",
-                }
-                record_sync_history(roadmap, new_task, record)
-                roadmap["tasks"].insert(0, new_task)
-                roadmap_modified = True
-
-                link_msg = build_link_comment(task_id, phase, assignee)
-                run_cmd(f'gh issue comment {num} --repo {REPO} -b {shlex.quote(link_msg)}')
-                run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked"')
-                build_events.emit(PROJECT_ROOT, task_id, "webhook", record["message"])
-                log(f"Created roadmap task {task_id} from Issue #{num} (phase: {phase})")
+            if roadmap_store.update_roadmap(ROADMAP_FILE, reconcile):
+                import roadmap_sync
+                roadmap_sync.sync_roadmap_to_github()
             continue
 
-        # 2. Check if a previously linked task was unlabelled
-        if matching_tasks and FACTORY_TASK_LABEL not in labels:
-            for t in matching_tasks:
-                if not t.get("unlinked") and t.get("status") not in ("completed", "verified", "closed"):
-                    unlink_and_pause_task(t, num, f"Issue #{num} does not have '{FACTORY_TASK_LABEL}'")
-                    if roadmap.get("current_task_id") == t["id"]:
-                        roadmap["current_task_id"] = None
-                    record = {
-                        "timestamp": now_ts,
-                        "github_event": "issues",
-                        "github_action": "unlabeled",
-                        "issue_id": issue.get("id"),
-                        "issue_number": num,
-                        "task_id": t["id"],
-                        "action": "task_unlinked_paused",
-                        "message": f"Issue #{num} missing '{FACTORY_TASK_LABEL}': unlinked and paused task {t['id']}",
-                    }
-                    record_sync_history(roadmap, t, record)
-                    build_events.emit(PROJECT_ROOT, t["id"], "webhook", record["message"])
-                    roadmap_modified = True
-                    log(f"Unlinked and paused task {t['id']} because Issue #{num} lacks '{FACTORY_TASK_LABEL}'")
+        ignored_match = next((l for l in labels if l in IGNORED_LABELS), None)
+        if ignored_match and FACTORY_TASK_LABEL not in labels:
+            log(f"Skipping Issue #{num} ('{title}') - ignored label: '{ignored_match}'")
             continue
 
         # 3. Standard issue triage/approval fallback

@@ -79,6 +79,9 @@ class FailureAnalysis:
     raw_tail: str = ""
     summary: str = ""
     remediation_hint: str = ""
+    changed_files: list[str] = field(default_factory=list)
+    related_files: list[str] = field(default_factory=list)
+    diff_excerpt: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -117,6 +120,9 @@ class FailureAnalysis:
             raw_tail=str(data.get("raw_tail", "")),
             summary=str(data.get("summary", "")),
             remediation_hint=str(data.get("remediation_hint", "")),
+            changed_files=list(data.get("changed_files", [])),
+            related_files=list(data.get("related_files", [])),
+            diff_excerpt=str(data.get("diff_excerpt", "")),
         )
 
     def to_prompt_section(self, max_length: int = 4000) -> str:
@@ -231,6 +237,9 @@ class ReflectionEngine:
 
             if in_python_trace:
                 current_trace.append(scrubbed)
+                frame = re.search(r'File "([^"]+)", line (\d+)', scrubbed)
+                if frame:
+                    implicated_files.append(frame[1])
                 # Python trace ends when a non-indented exception line appears
                 if not raw_line.startswith((" ", "\t")) and len(current_trace) > 1:
                     stack_traces.append("\n".join(current_trace))
@@ -526,6 +535,16 @@ class ReflectionEngine:
             f"Run the full verification command `{command}` before finishing.\n"
             "Leave Git commits, pushes, and roadmap lifecycle updates to the orchestrator.\n\n"
         )
+        if analysis.changed_files:
+            instructions += (
+                "Recent changed files also named in diagnostics: "
+                + (", ".join(analysis.related_files[:8]) or "none") + ".\n"
+                "Other recent changes (context only): "
+                + ", ".join(f for f in analysis.changed_files[:12] if f not in analysis.related_files)
+                + ".\n"
+            )
+        if analysis.diff_excerpt:
+            instructions += "Recent diff to inspect:\n```diff\n" + analysis.diff_excerpt[:1600] + "\n```\n"
         details = analysis.to_prompt_section() + "\nRaw diagnostic tail:\n" + analysis.raw_tail[-1000:]
         return (instructions + details)[:self.max_feedback_chars]
 
@@ -551,8 +570,12 @@ class ReflectionEngine:
 _default_engine = ReflectionEngine()
 
 
-def analyze_failure(exit_code: int, output: str, command: str | None = None) -> FailureAnalysis:
-    return _default_engine.analyze(exit_code, output, command)
+def analyze_failure(
+    exit_code: int, output: str, command: str | None = None, *, stderr: str | None = None,
+) -> FailureAnalysis:
+    # Reserve space for each stream so verbose stdout cannot hide stderr.
+    combined = output if stderr is None else output[-32000:] + "\n" + stderr[-32000:]
+    return _default_engine.analyze(exit_code, combined, command)
 
 
 def synthesize_remediation_prompt(task: dict, analysis: FailureAnalysis, agent: str | None = None) -> str:

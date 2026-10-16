@@ -84,7 +84,11 @@ fi
 python3 "$PROJECT_DIR/issue_bot.py" >> "$LOG_FILE" 2>&1
 
 # 4b. Recover stale tasks with retry backoff and escalation
-if [ -f "$PROJECT_DIR/recover_tasks.py" ]; then
+# DISABLED: recover_tasks.py's 1800s TTL re-pauses legitimately long-running
+# tasks (agent timeout now 960s + verification 600s can exceed 30 min), which
+# fights the orchestrator and causes double-writer states. The orchestrator's
+# own single-writer guard + watchdog process keep-alive handle recovery.
+if [ -f "$PROJECT_DIR/recover_tasks.py" ] && [ -f "$PROJECT_DIR/.recover-enabled" ]; then
     RECOVERY_LOG="$LOG_DIR/recovery.log"
     python3 "$PROJECT_DIR/recover_tasks.py" --structured-log "$RECOVERY_LOG" >> "$LOG_FILE" 2>&1
     if [ -f "$RECOVERY_LOG" ] && [ -s "$RECOVERY_LOG" ]; then

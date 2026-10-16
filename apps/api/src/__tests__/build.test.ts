@@ -104,10 +104,15 @@ describe("Build dashboard access and approvals", () => {
     const { app, data, path } = await fixture();
     const attempt = {
       agent: "codex",
+      model: "reported-model",
       failure: "timeout",
       tokens: { prompt: 100, completion: 20, total: 120 },
       cost_usd: 0.001,
       duration_seconds: 2,
+      agent_duration_seconds: 1.5,
+      verification_duration_seconds: 0.5,
+      prompt_cost_usd: 0.0006,
+      completion_cost_usd: 0.0004,
       log_tail: "Provider secret",
     };
     const telemetry = {
@@ -127,7 +132,7 @@ describe("Build dashboard access and approvals", () => {
             id: "T-OTHER",
             tenant_id: otherId,
             telemetry: { ...telemetry, cost_usd: 99 },
-            attempts: [attempt],
+            attempts: [{ ...attempt, model: "private-model" }],
           },
         ],
       }),
@@ -145,6 +150,22 @@ describe("Build dashboard access and approvals", () => {
         },
       ],
       metrics: {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        prompt_cost_usd: 0.0006,
+        completion_cost_usd: 0.0004,
+        failed_attempts: 1,
+        successful_attempts: 0,
+        pending_attempts: 0,
+        success_rate: 0,
+        failure_rate: 1,
+        avg_agent_latency_seconds: 1.5,
+        avg_verification_latency_seconds: 0.5,
+        p95_latency_seconds: 1.5,
+        total_tasks_count: 1,
+        models: [
+          { agent: "codex", model: "reported-model", total_cost_usd: 0.001 },
+        ],
         total_cost_usd: 0.001,
         total_tokens: 120,
         avg_latency_seconds: 2,
@@ -160,7 +181,9 @@ describe("Build dashboard access and approvals", () => {
         ],
       },
     });
-    expect(response.body).not.toMatch(/Provider secret|log_tail|T-OTHER/);
+    expect(response.body).not.toMatch(
+      /Provider secret|private-model|log_tail|T-OTHER/,
+    );
   });
 
   it("updates budgets atomically, rejects stale decisions and can remove a cap", async () => {
@@ -512,7 +535,12 @@ describe("Build SSE transport", () => {
           active_attempt: { agent: "codex", phase: "agent" },
         },
       ],
-      metrics: { total_tokens: 0 },
+      metrics: {
+        total_tokens: 0,
+        active_tasks_count: 1,
+        active_agent_count: 1,
+        task_lifecycle_counts: { in_progress: 1 },
+      },
     });
     query.mockResolvedValue({ rows: [] });
     expect(await next()).toBe("event: unavailable\ndata: {}\n\n");

@@ -123,6 +123,25 @@ class VerificationTests(unittest.TestCase):
         self.assertNotIn("failure_analysis", self.latest())
         self.assertNotIn("failure_summary", self.latest())
         self.assertIn("Error: broken", self.latest()["verifications"][0]["failure_analysis"]["summary"])
+        children = [task for task in self.data()["tasks"] if task.get("is_verification_remediation")]
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0]["status"], "completed")
+        self.assertNotIn("remediation_task_id", self.latest())
+
+    def test_separate_stderr_survives_noisy_stdout_and_synthesizes_one_directive(self):
+        program = ("import sys; sys.stderr.write('TypeError: broken worker\\n    at src/worker.ts:8:3\\n'); "
+                   "sys.stderr.flush(); sys.stdout.write('noise\\n' * 10000); sys.exit(1)")
+        self.change(verification_cmd=shlex.join([sys.executable, "-c", program]))
+        for _ in range(2):
+            result = self.verify()
+            self.assertIn("TypeError: broken worker", result.failure_analysis["runtime_errors"])
+            self.assertIn("src/worker.ts:8:3", result.failure_analysis["stack_traces"][0])
+        children = [task for task in self.data()["tasks"] if task.get("is_verification_remediation")]
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0]["execution_mode"], "parent_retry")
+        self.assertEqual(children[0]["verification_cmd"], self.latest()["verification_cmd"])
+        self.assertEqual(children[0]["parent_task_id"], "T-verify")
+        self.assertEqual(self.latest()["remediation_task_id"], children[0]["id"])
 
     def test_missing_command_is_explicitly_skipped_without_changing_status_or_retry(self):
         for command in (None, "", "  ", 123):
@@ -222,6 +241,7 @@ class VerificationTests(unittest.TestCase):
                 for key, value in fields.items():
                     self.assertEqual(task[key], value)
                 self.assertNotIn("verifications", task)
+                self.assertFalse(any(t.get("is_verification_remediation") for t in self.data()["tasks"]))
 
     def test_inactive_or_closed_tasks_never_execute(self):
         for status in ("approved", "waiting_approval", "verified", "completed", "cancelled"):

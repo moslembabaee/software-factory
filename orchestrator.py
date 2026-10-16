@@ -26,7 +26,8 @@ import roadmap_store
 import pr_lifecycle
 import roadmap_sync
 import verify_task
-from command_runner import OUTPUT_LIMIT, run_cmd
+import verification_remediation as remediation
+from command_runner import OUTPUT_LIMIT, run_cmd, run_cmd_split
 from issue_lifecycle import (
     IGNORED_LABELS, issue_number_for_task, label_names, mark_issue_closed,
 )
@@ -52,8 +53,8 @@ class RuntimeConfig:
     repo: str = REPO
     remote: str = "origin"
     branch: str = "main"
-    agent_timeout: float = 720
-    verification_timeout: float = 300
+    agent_timeout: float = 960
+    verification_timeout: float = 600
     git_timeout: float = 120
     review_timeout: float = 30
     review_min_approvals: int = 2
@@ -95,6 +96,10 @@ class Attempt:
     estimated_tokens: bool = False
     agent_duration_seconds: float = 0.0
     verification_duration_seconds: float = 0.0
+    prompt_cost_usd: float | None = None
+    completion_cost_usd: float | None = None
+    model: str = "unspecified"
+    finalized: bool = False
 
 
 def extract_or_estimate_tokens(agent: str, prompt: str, output: str) -> dict[str, int]:
@@ -178,6 +183,8 @@ Leave Git commits, pushes, and roadmap lifecycle updates to the orchestrator.
                     if isinstance(task["failure_analysis"], dict)
                     else task["failure_analysis"])
         prompt += "\n" + reflection_engine.synthesize_remediation(task, analysis, agent) + "\n"
+    if task.get("remediation_task_id"):
+        prompt += f"\nImplement localized remediation `{task['remediation_task_id']}` within this task's retry.\n"
     if task.get("regression_context"):
         ctx = task["regression_context"]
         prompt += (f"\nRepair the existing PR on branch {task.get('target_branch', '')} "
@@ -263,6 +270,7 @@ class AgentRuntime:
             if bugfix_only and not candidate.get("is_bugfix"):
                 continue
             if (candidate.get("status") != "approved" or
+                    candidate.get("execution_mode") == "parent_retry" or
                     candidate.get("closed_at") or not self.eligible(candidate)):
                 continue
             # Before another implementation, bring base forward to the merged PR.
@@ -313,8 +321,21 @@ class AgentRuntime:
             if status == "completed":
                 task.pop("failure_analysis", None)
                 task.pop("failure_summary", None)
+            if status in ("completed", "failed", "cancelled"):
+                remediation.resolve_tasks(data, task, status)
             data["current_task_id"] = None
-        return self.update(task_id, apply, ("in_progress", "ready_for_verification", "verified"))
+        result = self.update(task_id, apply, ("in_progress", "ready_for_verification", "verified"))
+        if result:
+            try:
+                import event_bus
+                event_bus.publish("task_transition", {
+                    "task_id": task_id,
+                    "status": status,
+                    "timestamp": timestamp(),
+                })
+            except Exception:
+                pass
+        return result
 
     def publish(self, task: dict) -> tuple[bool, str]:
         success, result = pr_lifecycle.run_pr_lifecycle_for_verified_task(
@@ -379,6 +400,7 @@ class AgentRuntime:
                 blocked = current["telemetry"]["budget"]["exceeded"]
                 if not blocked:
                     current["active_attempt"] = {"agent": agent, "phase": "agent", "started_at": timestamp()}
+                    task.update(current)
 
             if not self.update(task_id, dispatch):
                 return "cancelled"
@@ -401,6 +423,7 @@ class AgentRuntime:
             if code == -2:  # Spawn/runtime failure did not reach the provider.
                 tokens, estimated = {"prompt": 0, "completion": 0, "total": 0}, False
             cost = telemetry.token_cost(agent, tokens, self.config.token_rates)
+            cost_breakdown = telemetry.token_cost_breakdown(agent, tokens, self.config.token_rates)
             verify_code = None
             verify_duration = 0.0
             verification_outcome = None
@@ -409,7 +432,9 @@ class AgentRuntime:
             # reflect it while verification runs, including a later crash/restart.
             attempt = Attempt(agent, timestamp(), code, None, failure, output[-4000:],
                               round(agent_duration, 3), tokens, cost, estimated,
-                              round(agent_duration, 3), 0.0)
+                              round(agent_duration, 3), 0.0,
+                              cost_breakdown["prompt_cost_usd"], cost_breakdown["completion_cost_usd"],
+                              telemetry.reported_model(output))
             index = 0
             budget_reached = False
 
@@ -438,7 +463,7 @@ class AgentRuntime:
                 started = time.monotonic()
                 try:
                     result = verify_task.verify_task(task_id, self.config.project_root,
-                        timeout=self.config.verification_timeout, runner=run_cmd)
+                        timeout=self.config.verification_timeout, runner=run_cmd_split)
                 except Exception as error:
                     result = verify_task.VerificationResult("failed", -2, f"Runtime error: {error}")
                 verify_duration = round(time.monotonic() - started, 3)
@@ -454,6 +479,7 @@ class AgentRuntime:
                 nonlocal budget_reached
                 row = current["attempts"][index]
                 row.update(verification_exit_code=verify_code, failure=failure,
+                    finalized=True,
                     verification_duration_seconds=verify_duration,
                     duration_seconds=round(agent_duration + verify_duration, 3), log_tail=output[-4000:])
                 stats = current["telemetry"]
@@ -480,6 +506,7 @@ class AgentRuntime:
                     current.pop("failure_analysis", None)
                     current.pop("failure_summary", None)
                 current.pop("active_attempt", None)
+                current["telemetry"] = telemetry.task_telemetry(current, self.config.default_budget_cap_usd)
 
             if not self.update(task_id, finalize, ("in_progress", "ready_for_verification", "verified")):
                 return "cancelled"
@@ -548,7 +575,7 @@ class AgentRuntime:
                 if verification_only:
                     result = verify_task.verify_task(
                         task["id"], self.config.project_root,
-                        timeout=self.config.verification_timeout, runner=run_cmd,
+                        timeout=self.config.verification_timeout, runner=run_cmd_split,
                     )
                     log(self.config, f"Verification {task['id']}: {result.outcome} {result.note}", task["id"])
                     if result.outcome == "verified":

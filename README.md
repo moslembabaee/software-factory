@@ -123,8 +123,8 @@ Antigravity's `AGY_ERROR` with exit code zero), and failed verification advance
 to the next provider with bounded failure feedback. A provider quota requires
 that provider's quota to reset; it does not require an implementation repair.
 
-Verification failures are analyzed locally from the bounded, combined stdout and
-stderr capture before reducing the stored log tail. The reflection engine extracts
+Verification failures are analyzed locally from bounded, separate stdout and
+stderr captures before reducing the stored log tail. The reflection engine extracts
 TypeScript errors, test names, assertions, exceptions, stack traces and timeouts.
 Structured `failure_analysis` and `failure_summary` fields are saved on the task,
 verification record and failed attempt. The next provider receives a remediation
@@ -132,6 +132,17 @@ prompt naming the failure, implicated files and full verification command. A lat
 approval reuses saved diagnostics; successful verification clears the live summary
 while retaining failure history. Reflection uses no additional provider calls and
 preserves the existing one-attempt-per-provider retry limit and process deadlines.
+
+The verifier correlates exact diagnostic paths with staged, unstaged and untracked
+files and attaches a bounded HEAD diff, prioritizing matching files. Other changed
+files are context only. Missing Git metadata leaves the original diagnostics usable.
+Each distinct failure synthesizes a localized `T-REPAIR-*` task in `ROADMAP.json`,
+linked to its parent and verification record. Identical diagnostic and diff evidence
+reuses the same directive; each parent has at most three. These `parent_retry`
+records stay pending while the parent's existing provider chain attempts the repair;
+they do not dispatch independently or create additional provider calls. Successful
+verification completes them, and exhaustion or budget failure marks them failed.
+The original verification command and diagnostic history remain attached for review.
 
 Runtime telemetry is persisted atomically with each task in the existing roadmap
 store. Per-attempt records track reported or estimated input/output tokens,
@@ -157,6 +168,19 @@ bars and budget progress. `PATCH /api/v1/projects/:id/build/tasks/:taskId/budget
 accepts `{ "revision": "<current revision>", "budget_cap_usd": 5 }` (or null)
 and rejects stale revisions and closed or inaccessible tasks. Attempt output is
 never included in the public telemetry payload.
+
+Telemetry also includes prompt/output token and USD splits, resolved success and
+failure rates, pending outcomes, task lifecycle distributions, and per-agent and
+per-reported-model latency summaries. Model names are read from structured CLI
+reports; absent names are `unspecified`. Provider p50/p95 use the nearest-rank
+method over invocation durations, excluding verification time. Average attempt
+latency includes verification; its separate average is also available. Success
+rates use only resolved attempts, so verification in progress is not a success.
+Closed tasks count as completed even if a stale active marker remains. Legacy
+cost splits are inferred using default rate weights while preserving recorded
+total spend; new attempts store the configured-rate split directly. All cost
+figures remain estimates rather than provider invoices. New snapshot fields are
+optional in the shared contract for compatibility with older producers.
 
 After an agent succeeds, the independent verification gate must pass before
 Git staging, commit and push. `pr_lifecycle.py` re-reads the task and requires a

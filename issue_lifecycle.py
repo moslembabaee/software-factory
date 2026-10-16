@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,6 +72,8 @@ def label_names(issue: dict) -> set[str]:
 
 
 def issue_number_for_task(task: dict) -> int | None:
+    if task.get("unlinked"):
+        return None
     if task.get("github_issue_number"):
         try:
             return int(task["github_issue_number"])
@@ -81,10 +84,96 @@ def issue_number_for_task(task: dict) -> int | None:
         number = task_id[len("T-ISSUE-"):].split("-", 1)[0]
         if number.isdigit():
             return int(number)
+    # Check description for "Reference: Closes #14" or "Closes #14" or "Issue #14"
+    desc = task.get("description") or ""
+    m = re.search(r'(?:Closes|Fixes|Resolves|Parent Issue:?|Issue:?)\s*#(\d+)', desc, re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    # Check title for "Issue #14"
+    title = task.get("title") or ""
+    m = re.search(r'Issue\s*#(\d+)', title, re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
     return None
 
 
-def task_matches_issue(task: dict, number: int) -> bool:
+def extract_task_id_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    # Check for HTML comment marker <!-- factory-task-id: (task_id) -->
+    m = re.search(r'<!--\s*factory-task-id:\s*([A-Za-z0-9_-]+)\s*-->', text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Check for **Task ID:** `(task_id)` or Task ID: (task_id)
+    m = re.search(r'(?:\*\*Task ID:\*\*|Task ID:)\s*`?([A-Za-z0-9_-]+)`?', text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Check for T-ISSUE-X pattern
+    m = re.search(r'\b(T-ISSUE-\d+(?:-\d+)?)\b', text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def extract_task_id_from_issue(issue: dict) -> str | None:
+    body = issue.get("body") or ""
+    tid = extract_task_id_from_text(body)
+    if tid:
+        return tid
+    comments = issue.get("comments") or []
+    if isinstance(comments, list):
+        for c in comments:
+            if isinstance(c, dict):
+                c_body = c.get("body") or ""
+                tid = extract_task_id_from_text(c_body)
+                if tid:
+                    return tid
+            elif isinstance(c, str):
+                tid = extract_task_id_from_text(c)
+                if tid:
+                    return tid
+    return None
+
+
+def task_matches_issue(task: dict, number: int, issue_task_id: str | None = None, include_unlinked: bool = False) -> bool:
+    if not include_unlinked and task.get("unlinked"):
+        return False
+    if task.get("github_issue_number") and task.get("github_issue_number") != number:
+        return False
+    if issue_task_id and task.get("id") == issue_task_id:
+        return True
+    if include_unlinked and task.get("unlinked_from_issue") == number:
+        return True
+    if task.get("github_issue_number") == number:
+        return True
+    if include_unlinked:
+        task_id = task.get("id", "")
+        if task_id.startswith("T-ISSUE-"):
+            num_part = task_id[len("T-ISSUE-"):].split("-", 1)[0]
+            if num_part.isdigit() and int(num_part) == number:
+                return True
+        desc = task.get("description") or ""
+        m = re.search(r'(?:Closes|Fixes|Resolves|Parent Issue:?|Issue:?)\s*#(\d+)', desc, re.IGNORECASE)
+        if m:
+            try:
+                if int(m.group(1)) == number:
+                    return True
+            except (ValueError, TypeError):
+                pass
+        title = task.get("title") or ""
+        m = re.search(r'Issue\s*#(\d+)', title, re.IGNORECASE)
+        if m:
+            try:
+                if int(m.group(1)) == number:
+                    return True
+            except (ValueError, TypeError):
+                pass
     return issue_number_for_task(task) == number
 
 
@@ -110,36 +199,45 @@ def mark_issue_in_progress(roadmap: dict, task: dict,
     return modified
 
 
-def infer_phase_from_labels(labels: set[str] | list[str] | dict, label_config: dict | None = None) -> str:
+def infer_phase_from_labels(labels: set[str] | list[str] | list[dict] | dict, label_config: dict | None = None) -> str:
     """Infer the roadmap phase from label configuration or defaults."""
     if isinstance(labels, dict):
         raw_labels = label_names(labels)
     elif isinstance(labels, (set, list, tuple)):
-        raw_labels = {str(l).strip().lower() for l in labels}
+        raw_labels = set()
+        for l in labels:
+            if isinstance(l, dict):
+                name = l.get("name", "")
+                if name:
+                    raw_labels.add(str(name).strip().lower())
+            elif isinstance(l, str):
+                raw_labels.add(l.strip().lower())
     else:
         raw_labels = set()
 
     # Load custom mapping if provided
     custom_map: dict[str, str] = {}
+    default_phase: str | None = None
     if label_config:
         phases = label_config.get("phases") or label_config.get("label_phase_map") or label_config
         if isinstance(phases, dict):
             for k, v in phases.items():
                 if isinstance(k, str) and isinstance(v, str):
                     custom_map[k.strip().lower()] = v.strip()
+        default_phase = label_config.get("default_phase")
 
     # 1. Check custom config map first
-    for label in raw_labels:
+    for label in sorted(raw_labels):
         if label in custom_map:
             return custom_map[label]
 
     # 2. Check DEFAULT_LABEL_PHASE_MAP
-    for label in raw_labels:
+    for label in sorted(raw_labels):
         if label in DEFAULT_LABEL_PHASE_MAP:
             return DEFAULT_LABEL_PHASE_MAP[label]
 
     # 3. Check for prefixes like phase/ or phase:
-    for label in raw_labels:
+    for label in sorted(raw_labels):
         for prefix in ("phase/", "phase:", "factory/phase/", "factory/phase:"):
             if label.startswith(prefix):
                 suffix = label[len(prefix):].strip()
@@ -161,13 +259,13 @@ def infer_phase_from_labels(labels: set[str] | list[str] | dict, label_config: d
                         return known
 
     # 4. Check if any known phase name is present in labels
-    for label in raw_labels:
+    for label in sorted(raw_labels):
         for known in KNOWN_PHASES:
             if known.lower() == label or known.lower() in label:
                 return known
 
     # Default fallback
-    return "Community & Issues"
+    return default_phase or "Community & Issues"
 
 
 def extract_assignee(issue: dict) -> str | None:
@@ -189,26 +287,28 @@ def extract_assignee(issue: dict) -> str | None:
 
 
 def get_webhook_dedupe_key(payload: dict, headers: dict | None = None) -> str | None:
-    """Generate an idempotency key: issue_id + event_timestamp."""
-    issue = payload.get("issue")
-    if not isinstance(issue, dict):
-        return None
-    issue_id = issue.get("id") or issue.get("number")
-    if issue_id is None:
-        return None
+    """Issue identity and source timestamp, scoped to the event that changed it.
 
-    event_timestamp = (
-        issue.get("updated_at")
-        or issue.get("closed_at")
-        or issue.get("created_at")
-        or payload.get("timestamp")
-        or (headers.get("X-GitHub-Delivery") if headers else None)
-    )
-    if not event_timestamp:
-        action = payload.get("action", "unknown")
-        event_timestamp = action
-
-    return f"{issue_id}:{event_timestamp}"
+    GitHub timestamps have second precision; distinct labels and comments may
+    share an issue timestamp. Delivery IDs change on some replay paths.
+    """
+    headers = headers or {}
+    issue = payload.get("issue") or {}
+    identity = issue.get("id") or issue.get("number")
+    if identity is None:
+        return None
+    comment = payload.get("comment") or {}
+    event_time = (comment.get("updated_at") or comment.get("created_at") or
+                  issue.get("updated_at") or issue.get("updatedAt") or
+                  payload.get("event_timestamp") or payload.get("timestamp"))
+    if not event_time:
+        event_time = headers.get("X-GitHub-Delivery") or headers.get("x-github-delivery")
+    if not event_time:
+        return None
+    return json.dumps([str(identity), event_time,
+                       headers.get("X-GitHub-Event") or headers.get("x-github-event") or "issues",
+                       payload.get("action", ""), (payload.get("label") or {}).get("name", ""),
+                       comment.get("id")], separators=(",", ":"))
 
 
 def is_webhook_duplicate(key: str, dedupe_file: Path | str | None = None, memory_set: set[str] | None = None) -> bool:
@@ -220,8 +320,12 @@ def is_webhook_duplicate(key: str, dedupe_file: Path | str | None = None, memory
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(data, list) and key in data:
+                    if memory_set is not None:
+                        memory_set.add(key)
                     return True
                 if isinstance(data, dict) and key in data:
+                    if memory_set is not None:
+                        memory_set.add(key)
                     return True
             except Exception:
                 pass
@@ -247,7 +351,9 @@ def record_webhook_processed(key: str, dedupe_file: Path | str | None = None, me
                 existing.append(key)
                 if len(existing) > 5000:
                     existing = existing[-5000:]
-                p.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+                temp_p = p.with_suffix(".tmp")
+                temp_p.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+                temp_p.replace(p)
         except Exception:
             pass
 
@@ -268,8 +374,18 @@ def build_result_comment(task: dict, status: str) -> str:
     task_id = task.get("id", "unknown")
     title = task.get("title", "")
     phase = task.get("phase", "")
-    commit_sha = task.get("commit_sha") or task.get("commit") or task.get("sha")
-    pr_ref = task.get("pr_number") or task.get("pr_url") or task.get("pr_reference") or task.get("pr")
+    commit_sha = (
+        task.get("commit_sha")
+        or task.get("merge_commit_sha")
+        or task.get("commit")
+        or task.get("sha")
+    )
+    pr_ref = (
+        task.get("pr_number")
+        or task.get("pr_url")
+        or task.get("pr_reference")
+        or task.get("pr")
+    )
 
     status_display = "Verified" if status == "verified" else "Completed"
     lines = [
@@ -300,7 +416,7 @@ def unlink_and_pause_task(task: dict, issue_num: int, reason: str = "") -> bool:
     task["github_issue_number"] = None
     task["unlinked"] = True
     task["unlinked_from_issue"] = issue_num
-    if task.get("status") not in ("completed", "verified", "closed"):
+    if task.get("status") not in ("done", "completed", "verified", "closed"):
         task["status"] = "paused"
         task["paused_at"] = datetime.now(timezone.utc).isoformat()
         task["pause_reason"] = reason or f"Unlinked from GitHub issue #{issue_num}"
@@ -317,7 +433,7 @@ def record_sync_history(roadmap_data: dict, task: dict | None, record: dict) -> 
         task.setdefault("sync_history", []).append(record)
 
 
-def mark_issue_closed(roadmap: dict, number: int, closed_at: str | None = None) -> bool:
+def mark_issue_closed(roadmap: dict, number: int, closed_at: str | None = None, issue_id: str | None = None) -> bool:
     """Closure is terminal for every linked task, including decomposed tasks."""
     modified = False
     timestamp = closed_at or datetime.now(timezone.utc).isoformat()
@@ -330,6 +446,17 @@ def mark_issue_closed(roadmap: dict, number: int, closed_at: str | None = None) 
                 task["completed_at"] = timestamp
             if not task.get("closed_at"):
                 task["closed_at"] = timestamp
+            record = {
+                "timestamp": timestamp,
+                "github_event": "issues",
+                "github_action": "closed",
+                "issue_id": issue_id,
+                "issue_number": number,
+                "task_id": task.get("id"),
+                "action": "task_completed_from_closed_issue",
+                "message": f"GitHub issue #{number} closed: marked task {task.get('id')} completed",
+            }
+            record_sync_history(roadmap, task, record)
             modified = True
         if roadmap.get("current_task_id") == task.get("id"):
             roadmap["current_task_id"] = None

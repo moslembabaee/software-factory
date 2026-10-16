@@ -506,6 +506,142 @@ class PullRequestTests(unittest.TestCase):
         self.assertIn("failure", context["summary"])
         self.assertFalse(self.calls("merge"))
 
+    def test_dirty_merge_state_detects_conflicts(self):
+        self.pending()
+        self.git("checkout", "main")
+        (self.repo / "feature.txt").write_text("conflict on main")
+        self.git("add", "feature.txt")
+        self.git("commit", "-m", "conflict on main")
+        self.git("push", "origin", "main")
+        self.github.merge_state = "DIRTY"
+        ok, result = self.run_lifecycle()
+        self.assertTrue(ok, result)
+        self.assertFalse(result["merged"])
+        task = self.latest()
+        self.assertEqual(task["pr_status"], "conflicted")
+        self.assertTrue(task["conflict_details"]["has_conflict"])
+        self.assertIn("feature.txt", task["conflict_details"]["conflicting_files"])
+        self.assertFalse(self.calls("merge"))
+
+    def test_behind_base_clean_rebase_and_reverify_merges_successfully(self):
+        self.pending()
+        old_commit_sha = self.latest()["commit_sha"]
+        self.git("checkout", "main")
+        (self.repo / "other.txt").write_text("unrelated commit on main")
+        self.git("add", "other.txt")
+        self.git("commit", "-m", "advancing main")
+        self.git("push", "origin", "main")
+        self.github.merge_state = "BEHIND"
+        self.github.ci = [{"state": "SUCCESS"}]
+        cmd = 'python3 -c "print(\'reverified\')"'
+        t = self.latest()
+        new_verifs = [{"command": cmd, "exit_code": 0, "timestamp": "2026-10-16T00:00:00Z"}]
+        t_updated = {**t, "verification_cmd": cmd, "verifications": new_verifs}
+        self.change(verification_cmd=cmd, verifications=new_verifs,
+                    published_evidence=lifecycle.publication_evidence(t_updated))
+        self.task["verification_cmd"] = cmd
+        self.task["verifications"] = new_verifs
+
+        ok, result = self.run_lifecycle()
+        self.assertTrue(ok, result)
+        self.assertTrue(result["merged"])
+        task = self.latest()
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["pr_status"], "merged")
+        self.assertNotEqual(task["commit_sha"], old_commit_sha)
+        self.assertTrue(task["rebase_result"]["success"])
+        self.assertTrue(task["rebase_result"]["reverified"])
+        self.assertTrue(task["rebase_result"]["verification_passed"])
+        self.assertEqual(len(self.calls("merge")), 1)
+
+    def test_behind_base_rebase_conflict_aborts_and_marks_conflicted(self):
+        self.pending()
+        self.git("checkout", "main")
+        (self.repo / "feature.txt").write_text("conflicting content on main")
+        self.git("add", "feature.txt")
+        self.git("commit", "-m", "conflicting commit on main")
+        self.git("push", "origin", "main")
+        self.github.merge_state = "BEHIND"
+        self.github.ci = [{"state": "SUCCESS"}]
+        cmd = 'python3 -c "print(\'reverified\')"'
+        t = self.latest()
+        new_verifs = [{"command": cmd, "exit_code": 0, "timestamp": "2026-10-16T00:00:00Z"}]
+        t_updated = {**t, "verification_cmd": cmd, "verifications": new_verifs}
+        self.change(verification_cmd=cmd, verifications=new_verifs,
+                    published_evidence=lifecycle.publication_evidence(t_updated))
+        self.task["verification_cmd"] = cmd
+        self.task["verifications"] = new_verifs
+
+        ok, result = self.run_lifecycle()
+        self.assertTrue(ok, result)
+        self.assertFalse(result["merged"])
+        task = self.latest()
+        self.assertEqual(task["pr_status"], "conflicted")
+        self.assertTrue(task["conflict_details"]["has_conflict"])
+        self.assertIn("feature.txt", task["conflict_details"]["conflicting_files"])
+        self.assertEqual(self.git("branch", "--show-current"), "main")
+        self.assertFalse(self.calls("merge"))
+
+    def test_behind_base_reverification_failure_resets_and_marks_rebase_failed(self):
+        self.pending()
+        old_commit_sha = self.latest()["commit_sha"]
+        self.git("checkout", "main")
+        (self.repo / "other.txt").write_text("unrelated commit on main")
+        self.git("add", "other.txt")
+        self.git("commit", "-m", "advancing main")
+        self.git("push", "origin", "main")
+        self.github.merge_state = "BEHIND"
+        self.github.ci = [{"state": "SUCCESS"}]
+        fail_cmd = 'python3 -c "import sys; sys.exit(1)"'
+        t = self.latest()
+        new_verifs = [{"command": fail_cmd, "exit_code": 0, "timestamp": "2026-10-16T00:00:00Z"}]
+        t_updated = {**t, "verification_cmd": fail_cmd, "verifications": new_verifs}
+        self.change(verification_cmd=fail_cmd, verifications=new_verifs,
+                    published_evidence=lifecycle.publication_evidence(t_updated))
+        self.task["verification_cmd"] = fail_cmd
+        self.task["verifications"] = new_verifs
+
+        ok, result = self.run_lifecycle()
+        self.assertTrue(ok, result)
+        self.assertFalse(result["merged"])
+        task = self.latest()
+        self.assertEqual(task["pr_status"], "rebase_failed")
+        self.assertFalse(task["rebase_result"]["success"])
+        self.assertTrue(task["rebase_result"]["reverified"])
+        self.assertFalse(task["rebase_result"]["verification_passed"])
+        self.assertIn("Re-verification", task["publication_error"])
+        self.assertEqual(self.git("rev-parse", "factory/t-42"), old_commit_sha)
+        self.assertEqual(self.git("branch", "--show-current"), "main")
+        self.assertFalse(self.calls("merge"))
+
+    def test_merge_queue_processes_behind_pr_with_clean_rebase(self):
+        self.pending()
+        old_commit_sha = self.latest()["commit_sha"]
+        self.git("checkout", "main")
+        (self.repo / "unrelated.txt").write_text("unrelated commit on main")
+        self.git("add", "unrelated.txt")
+        self.git("commit", "-m", "advance main for merge queue")
+        self.git("push", "origin", "main")
+        self.github.merge_state = "BEHIND"
+        self.github.ci = [{"state": "SUCCESS"}]
+        cmd = 'python3 -c "print(\'reverified\')"'
+        t = self.latest()
+        new_verifs = [{"command": cmd, "exit_code": 0, "timestamp": "2026-10-16T00:00:00Z"}]
+        t_updated = {**t, "verification_cmd": cmd, "verifications": new_verifs}
+        self.change(verification_cmd=cmd, verifications=new_verifs,
+                    published_evidence=lifecycle.publication_evidence(t_updated))
+        self.task["verification_cmd"] = cmd
+        self.task["verifications"] = new_verifs
+
+        merged = lifecycle.scan_and_merge_prs(self.repo, runner=self.github, timeout=30)
+        self.assertEqual(merged, ["T-42"])
+        task = self.latest()
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["pr_status"], "merged")
+        self.assertNotEqual(task["commit_sha"], old_commit_sha)
+        self.assertTrue(task["rebase_result"]["success"])
+        self.assertEqual(len(self.calls("merge")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

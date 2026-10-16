@@ -99,6 +99,11 @@ export type {
 } from "./build.js";
 export {
   PullRequestStatusSchema,
+  MergeStateStatusSchema,
+  MergeQueueStatusSchema,
+  ConflictDetailsSchema,
+  RebaseResultSchema,
+  MergeQueueEntrySchema,
   CiStatusSchema,
   PullRequestMetadataSchema,
   PullRequestSchema,
@@ -119,9 +124,20 @@ export {
   evaluateLintReview,
   dispatchParallelReviews,
   evaluateConsensusReviewGate,
+  detectConflicts,
+  needsRebase,
+  createMergeQueueEntry,
+  prioritizeMergeQueue,
+  evaluateRebaseOutcome,
+  formatConflictComment,
 } from "./pr-lifecycle.js";
 export type {
   PullRequestStatus,
+  MergeStateStatus,
+  MergeQueueStatus,
+  ConflictDetails,
+  RebaseResult,
+  MergeQueueEntry,
   CiStatus,
   PullRequestMetadata,
   PullRequest,

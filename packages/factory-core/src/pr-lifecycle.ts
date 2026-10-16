@@ -14,7 +14,73 @@ export const PullRequestStatusSchema = z.enum([
   "review_pending",
   "review_passed",
   "review_failed",
+  "conflicted",
+  "rebasing",
+  "rebase_failed",
 ]);
+
+export const MergeStateStatusSchema = z.enum([
+  "clean",
+  "dirty",
+  "behind",
+  "blocked",
+  "unknown",
+  "unstable",
+  "draft",
+  "has_hooks",
+]);
+
+export const MergeQueueStatusSchema = z.enum([
+  "queued",
+  "rebasing",
+  "verifying",
+  "ready_to_merge",
+  "merged",
+  "conflicted",
+  "failed",
+]);
+
+export const ConflictDetailsSchema = z.strictObject({
+  hasConflict: z.boolean(),
+  conflictingFiles: z.array(z.string()),
+  baseBranch: z.string().min(1),
+  branch: z.string().min(1),
+  baseSha: z.string().optional(),
+  headSha: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export const RebaseResultSchema = z.strictObject({
+  success: z.boolean(),
+  rebasedSha: z.string().optional(),
+  baseSha: z.string().optional(),
+  conflicts: z.array(z.string()).default([]),
+  reverified: z.boolean().default(false),
+  verificationPassed: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
+export const MergeQueueEntrySchema = z.strictObject({
+  taskId: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  branch: z.string().min(1),
+  baseBranch: z.string().min(1),
+  commitSha: z.string().min(1),
+  status: MergeQueueStatusSchema,
+  queuedAt: z.string(),
+  attempts: z.number().int().nonnegative().default(0),
+  conflicts: z.array(z.string()).default([]),
+  error: z.string().nullable().optional(),
+  rebasedCommitSha: z.string().nullable().optional(),
+  verifiedAt: z.string().nullable().optional(),
+  mergedAt: z.string().nullable().optional(),
+});
+
+export type MergeStateStatus = z.infer<typeof MergeStateStatusSchema>;
+export type MergeQueueStatus = z.infer<typeof MergeQueueStatusSchema>;
+export type ConflictDetails = z.infer<typeof ConflictDetailsSchema>;
+export type RebaseResult = z.infer<typeof RebaseResultSchema>;
+export type MergeQueueEntry = z.infer<typeof MergeQueueEntrySchema>;
 
 export const CiStatusSchema = z.enum([
   "pending",
@@ -118,6 +184,9 @@ export const PullRequestSchema = z.strictObject({
   createdAt: z.string(),
   mergedAt: z.string().nullable().optional(),
   consensusReview: ConsensusReviewGateResultSchema.optional(),
+  mergeStateStatus: MergeStateStatusSchema.optional(),
+  conflictDetails: ConflictDetailsSchema.optional(),
+  rebaseResult: RebaseResultSchema.optional(),
 });
 
 export type PullRequestStatus = z.infer<typeof PullRequestStatusSchema>;
@@ -185,6 +254,7 @@ export function canAutoMerge(
   ciStatus: CiStatus,
   prStatus: PullRequestStatus,
   consensusGate?: ConsensusReviewGateResult | null,
+  mergeStateStatus?: string | null,
 ): boolean {
   if (
     !consensusGate?.passed ||
@@ -195,6 +265,24 @@ export function canAutoMerge(
   ) {
     return false;
   }
+  if (
+    prStatus === "conflicted" ||
+    prStatus === "rebase_failed" ||
+    prStatus === "rebasing"
+  ) {
+    return false;
+  }
+  if (mergeStateStatus) {
+    const normalized = mergeStateStatus.toLowerCase();
+    if (
+      normalized === "dirty" ||
+      normalized === "behind" ||
+      normalized === "blocked" ||
+      normalized === "draft"
+    ) {
+      return false;
+    }
+  }
   return (
     ciStatus === "passed" &&
     (prStatus === "open" ||
@@ -203,6 +291,210 @@ export function canAutoMerge(
       prStatus === "approved" ||
       prStatus === "review_passed")
   );
+}
+
+export function detectConflicts(
+  gitOutput: string,
+  baseBranch: string,
+  branch: string,
+  options?: { baseSha?: string; headSha?: string },
+): ConflictDetails {
+  const files = new Set<string>();
+
+  // 1. CONFLICT (content): Merge conflict in <file>
+  for (const match of gitOutput.matchAll(
+    /CONFLICT\s+\([^)]+\):\s+Merge conflict in\s+(\S+)/g,
+  )) {
+    if (match[1]) files.add(match[1].replace(/['"]/g, "").trim());
+  }
+
+  // 2. CONFLICT (modify/delete): <file> deleted in ... and modified in ...
+  for (const match of gitOutput.matchAll(
+    /CONFLICT\s+\([^)]+\):\s+(\S+)\s+(?:deleted|modified|was)/g,
+  )) {
+    if (match[1]) files.add(match[1].replace(/['"]/g, "").trim());
+  }
+
+  // 3. Stage entries in merge-tree: <mode> <sha> <stage>\t<path>
+  for (const match of gitOutput.matchAll(
+    /^\d+\s+[0-9a-f]{40}\s+[123]\t(.+)$/gm,
+  )) {
+    if (match[1]) files.add(match[1].replace(/['"]/g, "").trim());
+  }
+
+  // 4. Porcelain status: UU file, AA file, etc.
+  for (const match of gitOutput.matchAll(
+    /^(?:UU|AA|UD|DU|UA|AU)\s+(.+)$/gm,
+  )) {
+    if (match[1]) files.add(match[1].replace(/['"]/g, "").trim());
+  }
+
+  // 5. Explicit diff conflict markers: <<<<<<< ... ======= ... >>>>>>>
+  const hasMarkers =
+    gitOutput.includes("<<<<<<<") &&
+    gitOutput.includes("=======") &&
+    gitOutput.includes(">>>>>>>");
+
+  if (hasMarkers && files.size === 0) {
+    const diffMatch = /^diff --git a\/(.+?) b\/(.+?)$/m.exec(gitOutput);
+    if (diffMatch?.[2] ?? diffMatch?.[1]) {
+      files.add((diffMatch[2] ?? diffMatch[1])!.trim());
+    } else {
+      files.add("conflict-markers");
+    }
+  }
+
+  const conflictingFiles = Array.from(files).sort();
+  const hasConflict = conflictingFiles.length > 0 || hasMarkers;
+
+  return ConflictDetailsSchema.parse({
+    hasConflict,
+    conflictingFiles,
+    baseBranch,
+    branch,
+    baseSha: options?.baseSha,
+    headSha: options?.headSha,
+    error: hasConflict
+      ? `Merge conflict detected in ${String(conflictingFiles.length)} file(s): ${conflictingFiles.slice(0, 5).join(", ")}`
+      : undefined,
+  });
+}
+
+export function needsRebase(
+  currentBaseSha: string,
+  prBaseSha: string,
+  mergeStateStatus?: MergeStateStatus | string | null,
+): boolean {
+  if (mergeStateStatus) {
+    const normalized = mergeStateStatus.toLowerCase();
+    if (normalized === "behind" || normalized === "dirty") {
+      return true;
+    }
+  }
+  return Boolean(currentBaseSha && prBaseSha && currentBaseSha !== prBaseSha);
+}
+
+export function createMergeQueueEntry(params: {
+  taskId: string;
+  prNumber: number;
+  branch: string;
+  baseBranch: string;
+  commitSha: string;
+  queuedAt?: string;
+}): MergeQueueEntry {
+  return MergeQueueEntrySchema.parse({
+    taskId: params.taskId,
+    prNumber: params.prNumber,
+    branch: params.branch,
+    baseBranch: params.baseBranch,
+    commitSha: params.commitSha,
+    status: "queued",
+    queuedAt: params.queuedAt ?? new Date().toISOString(),
+    attempts: 0,
+    conflicts: [],
+  });
+}
+
+export function prioritizeMergeQueue(
+  entries: MergeQueueEntry[],
+): MergeQueueEntry[] {
+  const statusPriority: Record<MergeQueueStatus, number> = {
+    ready_to_merge: 0,
+    verifying: 1,
+    rebasing: 2,
+    queued: 3,
+    conflicted: 4,
+    failed: 5,
+    merged: 6,
+  };
+  return [...entries].sort((a, b) => {
+    const pA = statusPriority[a.status] ?? 99;
+    const pB = statusPriority[b.status] ?? 99;
+    if (pA !== pB) return pA - pB;
+    return new Date(a.queuedAt).getTime() - new Date(b.queuedAt).getTime();
+  });
+}
+
+export function evaluateRebaseOutcome(
+  entry: MergeQueueEntry,
+  rebaseResult: RebaseResult,
+): MergeQueueEntry {
+  const attempts = entry.attempts + 1;
+  if (rebaseResult.success) {
+    if (rebaseResult.reverified && rebaseResult.verificationPassed) {
+      return {
+        ...entry,
+        status: "ready_to_merge",
+        attempts,
+        rebasedCommitSha: rebaseResult.rebasedSha ?? entry.commitSha,
+        verifiedAt: new Date().toISOString(),
+        error: null,
+        conflicts: [],
+      };
+    }
+    return {
+      ...entry,
+      status: "verifying",
+      attempts,
+      rebasedCommitSha: rebaseResult.rebasedSha ?? entry.commitSha,
+      error: null,
+      conflicts: [],
+    };
+  }
+  if (rebaseResult.conflicts.length > 0) {
+    return {
+      ...entry,
+      status: "conflicted",
+      attempts,
+      conflicts: rebaseResult.conflicts,
+      error: rebaseResult.error ?? "Merge conflict detected during rebase",
+    };
+  }
+  return {
+    ...entry,
+    status: "failed",
+    attempts,
+    error: rebaseResult.error ?? "Rebase or reverification failed",
+  };
+}
+
+export function formatConflictComment(
+  conflict: ConflictDetails,
+  rebaseResult?: RebaseResult | null,
+): string {
+  const lines = [
+    "### ⚠️ Autonomous PR Conflict Detected",
+    "",
+    `Base branch \`${conflict.baseBranch}\` has advanced and conflicts were detected on branch \`${conflict.branch}\`.`,
+    "",
+    "#### Conflicting Files",
+    ...conflict.conflictingFiles.map((f) => `- \`${f}\``),
+    "",
+  ];
+  if (conflict.error) {
+    lines.push(
+      "#### Diagnostic Details",
+      `\`\`\`\n${conflict.error}\n\`\`\``,
+      "",
+    );
+  }
+  if (rebaseResult?.error && rebaseResult.error !== conflict.error) {
+    lines.push(
+      "#### Rebase Error",
+      `\`\`\`\n${rebaseResult.error}\n\`\`\``,
+      "",
+    );
+  }
+  lines.push(
+    "#### Next Steps",
+    "- Automatic rebase failed due to content conflicts.",
+    "- Rebase your branch onto the latest base branch and resolve conflicting hunks.",
+    "- Ensure the verification suite passes locally before updating.",
+    "",
+    `<!-- factory-conflict-base: ${conflict.baseBranch} -->`,
+    `<!-- factory-conflict-branch: ${conflict.branch} -->`,
+  );
+  return lines.join("\n");
 }
 
 export const RegressionContextSchema = z.strictObject({

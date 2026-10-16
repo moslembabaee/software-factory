@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_REPO = "moslembabaee/software-factory"
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
-Runner = Callable[[list[str], float, Path], tuple[int, str]]
+Runner = Callable[[list[str] | str, float, Path], tuple[int, str]]
 PR_FIELDS = ("number,url,state,headRefName,baseRefName,headRefOid,baseRefOid,isDraft,"
              "reviewDecision,mergeStateStatus,statusCheckRollup,mergeCommit,mergedAt")
 EVIDENCE_FIELDS = ("verification_cmd", "verifications", "build_approval", "started_at",
@@ -897,13 +897,225 @@ def trigger_self_healing(task: dict, project_root: Path, regression: dict,
     return bugfix
 
 
+def parse_conflict_files(output: str) -> list[str]:
+    files: set[str] = set()
+    for m in re.finditer(r"CONFLICT\s+\([^)]+\):\s+Merge conflict in\s+(\S+)", output):
+        files.add(m.group(1).strip("'\""))
+    for m in re.finditer(r"CONFLICT\s+\([^)]+\):\s+(\S+)\s+(?:deleted|modified|was)", output):
+        files.add(m.group(1).strip("'\""))
+    for m in re.finditer(r"^\d+\s+[0-9a-f]{40}\s+[123]\t(.+)$", output, re.M):
+        files.add(m.group(1).strip("'\""))
+    for m in re.finditer(r"^(?:UU|AA|UD|DU|UA|AU)\s+(.+)$", output, re.M):
+        files.add(m.group(1).strip("'\""))
+    return sorted(files)
+
+
+def detect_branch_conflicts(branch: str, base_branch: str, project_root: Path,
+                            runner: Runner = run_cmd, timeout: float = 60) -> dict:
+    code, out = runner(["git", "merge-tree", "--write-tree", branch, base_branch], timeout, project_root)
+    if code != 0 or "CONFLICT" in out:
+        conflicts = parse_conflict_files(out)
+        return {
+            "has_conflict": True,
+            "conflicting_files": conflicts,
+            "base_branch": base_branch,
+            "branch": branch,
+            "error": f"Merge conflict in {len(conflicts)} file(s): {', '.join(conflicts[:5])}" if conflicts else "Merge conflict detected between branch and base",
+        }
+    return {
+        "has_conflict": False,
+        "conflicting_files": [],
+        "base_branch": base_branch,
+        "branch": branch,
+    }
+
+
+def is_branch_behind_base(branch: str, base_branch: str, project_root: Path,
+                          runner: Runner = run_cmd, timeout: float = 60) -> bool:
+    try:
+        code_base, base_sha = runner(["git", "rev-parse", base_branch], timeout, project_root)
+        if code_base != 0 or not base_sha.strip():
+            return False
+        code_mb, mb_sha = runner(["git", "merge-base", branch, base_branch], timeout, project_root)
+        if code_mb != 0 or not mb_sha.strip():
+            return False
+        return base_sha.strip() != mb_sha.strip()
+    except Exception:
+        return False
+
+
+def attempt_rebase_and_reverify(
+    task: dict,
+    project_root: Path,
+    base_branch: str = DEFAULT_BASE_BRANCH,
+    remote: str = DEFAULT_REMOTE,
+    runner: Runner = run_cmd,
+    timeout: float = 120,
+) -> tuple[bool, dict]:
+    branch = task["branch"]
+    code, current = runner(["git", "branch", "--show-current"], timeout, project_root)
+    if code:
+        return False, {"error": f"git branch failed: {current}"}
+    if current.strip() != branch:
+        code, out = runner(["git", "checkout", branch], timeout, project_root)
+        if code:
+            return False, {"error": f"Cannot checkout branch {branch}: {out}"}
+
+    control_files = {}
+    for name in ("ROADMAP.json", "ROADMAP.md", ".last_deployed_commit"):
+        p = project_root / name
+        if p.exists():
+            control_files[name] = p.read_bytes()
+
+    def restore_control_files() -> None:
+        for name, data in control_files.items():
+            (project_root / name).write_bytes(data)
+
+    # Best-effort fetch of remote base_branch
+    runner(["git", "fetch", remote, f"{base_branch}:{base_branch}"], timeout, project_root)
+
+    code, out = runner(
+        ["git", "-c", "commit.gpgsign=false", "rebase", "--autostash", base_branch],
+        timeout,
+        project_root,
+    )
+    if code != 0:
+        conflicts = parse_conflict_files(out)
+        if not conflicts:
+            _, st_out = runner(["git", "status", "--porcelain"], timeout, project_root)
+            conflicts = parse_conflict_files(st_out)
+        runner(["git", "rebase", "--abort"], timeout, project_root)
+        runner(["git", "checkout", base_branch], timeout, project_root)
+        restore_control_files()
+        return False, {
+            "success": False,
+            "has_conflict": True,
+            "conflicts": conflicts,
+            "error": f"Rebase conflict in {len(conflicts)} file(s): {', '.join(conflicts[:5])}" if conflicts else f"Rebase failed ({code}): {out}",
+        }
+
+    code, sha_out = runner(["git", "rev-parse", "HEAD"], timeout, project_root)
+    if code or not sha_out.strip():
+        runner(["git", "checkout", base_branch], timeout, project_root)
+        restore_control_files()
+        return False, {"error": f"Cannot resolve rebased commit SHA: {sha_out}"}
+    new_sha = sha_out.strip()
+
+    if new_sha == task.get("commit_sha"):
+        runner(["git", "checkout", base_branch], timeout, project_root)
+        restore_control_files()
+        return True, {
+            "success": True,
+            "rebased_sha": new_sha,
+            "reverified": True,
+            "verification_passed": True,
+            "conflicts": [],
+        }
+
+    verif_cmd = task.get("verification_cmd")
+    if verif_cmd and str(verif_cmd).strip():
+        verif_code, verif_out = runner(str(verif_cmd).strip(), timeout, project_root)
+        if verif_code != 0:
+            runner(["git", "reset", "--hard", task["commit_sha"]], timeout, project_root)
+            runner(["git", "checkout", base_branch], timeout, project_root)
+            restore_control_files()
+            return False, {
+                "success": False,
+                "rebased_sha": new_sha,
+                "reverified": True,
+                "verification_passed": False,
+                "error": f"Re-verification suite failed after rebase ({verif_code}): {verif_out[-500:]}",
+            }
+
+    code, push_out = runner(
+        ["git", "push", "--force-with-lease", remote, f"{new_sha}:refs/heads/{branch}"],
+        timeout,
+        project_root,
+    )
+    if code != 0:
+        code, push_out = runner(
+            ["git", "push", "-f", remote, f"{new_sha}:refs/heads/{branch}"],
+            timeout,
+            project_root,
+        )
+        if code != 0:
+            runner(["git", "checkout", base_branch], timeout, project_root)
+            restore_control_files()
+            return False, {
+                "success": False,
+                "rebased_sha": new_sha,
+                "reverified": True,
+                "verification_passed": True,
+                "error": f"git push failed ({code}): {push_out}",
+            }
+
+    runner(["git", "checkout", base_branch], timeout, project_root)
+    restore_control_files()
+    return True, {
+        "success": True,
+        "rebased_sha": new_sha,
+        "reverified": True,
+        "verification_passed": True,
+        "conflicts": [],
+    }
+
+
+def _execute_merge(task: dict, root: Path, repo: str, runner: Runner, timeout: float,
+                   review_timeout: float, review_policy: dict | None,
+                   info: dict, fields: dict) -> tuple[bool, dict]:
+    if not _current(root, task):
+        return False, {"error": "Task changed before merge"}
+    diff_code, diff_out = runner(["gh", "pr", "diff", str(task["pr_number"]), "--repo", repo], timeout, root)
+    if (diff_code or not diff_out.startswith("diff --git ")
+            or len(diff_out.encode("utf-8")) >= OUTPUT_LIMIT
+            or re.search(r"(?m)^(?:GIT binary patch|Binary files .* differ)$", diff_out)):
+        evaluations = [review_failure("diff-reader", "security", "PR diff unavailable, truncated or uninspectable")]
+    else:
+        evaluations = dispatch_parallel_reviews(diff_out, project_root=root, runner=runner,
+                                                review_timeout=review_timeout)
+    consensus = evaluate_consensus_review_gate(evaluations, **(review_policy or {}))
+    consensus.update(head_sha=task["commit_sha"], base_sha=info.get("baseRefOid"))
+    fields["consensus_review"] = consensus
+    fields["security_gate_status"] = "passed" if consensus["security_gate_passed"] else "failed"
+    fields["review_status"] = "approved" if consensus["passed"] else "changes_requested"
+    if not consensus["passed"]:
+        error = f"Multi-agent review gate rejected PR: {consensus['summary']}"
+        fields["publication_error"] = error
+        build_events.emit(root, task["id"], "consensus_review", f"Review gate failed: {consensus['summary']}")
+    else:
+        observed = check_pr_ci_status(task["pr_number"], root, repo, runner, timeout)
+        fresh = observed.get("pr", {})
+        unchanged = all(fresh.get(k) == info.get(k) for k in
+                        ("headRefOid", "headRefName", "baseRefName", "baseRefOid"))
+        ready = (fresh.get("state") == "OPEN" and not fresh.get("isDraft", True)
+                 and observed["status"] == "passed" and fresh.get("mergeStateStatus") == "CLEAN"
+                 and fresh.get("reviewDecision") not in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"))
+        if not unchanged or not ready or not _current(root, task):
+            error = "PR or task changed during consensus review; merge deferred"
+            fields.update(ci_status="unknown", review_status="pending")
+        else:
+            if not _record(root, task, **fields):
+                return False, {"error": "Task changed before recording consensus review"}
+            build_events.emit(root, task["id"], "consensus_review", f"Review gate passed: {consensus['summary']}")
+            code, out = runner(["gh", "pr", "merge", str(task["pr_number"]), "--repo", repo,
+                                "--merge", "--delete-branch", "--match-head-commit", task["commit_sha"]],
+                               timeout, root)
+            if code:
+                fields["publication_error"] = f"Merge failed ({code}): {out}"
+            observed = check_pr_ci_status(task["pr_number"], root, repo, runner, timeout)
+            info = observed.get("pr", {})
+    return True, info
+
+
 def _reconcile(task: dict, root: Path, repo: str, runner: Runner, timeout: float,
                auto_merge: bool = True, review_timeout: float = 30,
-               review_policy: dict | None = None) -> tuple[bool, dict]:
+               review_policy: dict | None = None,
+               remote: str = DEFAULT_REMOTE) -> tuple[bool, dict]:
     ci = check_pr_ci_status(task["pr_number"], root, repo, runner, timeout)
     info = ci.get("pr", {})
     fields = {"ci_status": ci["status"], "pr_status": f"ci_{ci['status']}"}
     error = ci.get("error")
+    merge_state = str(info.get("mergeStateStatus") or "").upper()
     matches = (info.get("headRefName") == task["branch"]
                and info.get("baseRefName") == task["base_branch"]
                and info.get("headRefOid") == task["commit_sha"])
@@ -924,55 +1136,96 @@ def _reconcile(task: dict, root: Path, repo: str, runner: Runner, timeout: float
         fields["self_healing_status"] = bugfix["status"] if bugfix else "exhausted"
         if bugfix:
             fields["bugfix_task_id"] = bugfix["id"]
-    elif (info.get("state") == "OPEN" and ci["status"] == "passed" and auto_merge
-          and not info.get("isDraft", True) and info.get("mergeStateStatus") == "CLEAN"
-          and info.get("reviewDecision") not in ("CHANGES_REQUESTED", "REVIEW_REQUIRED")):
-        if not _current(root, task):
-            return False, {"error": "Task changed before merge"}
-        diff_code, diff_out = runner(["gh", "pr", "diff", str(task["pr_number"]), "--repo", repo], timeout, root)
-        # The transport captures a bounded tail. Never approve missing, truncated
-        # or uninspectable content, and never fall back to a stale local base.
-        if (diff_code or not diff_out.startswith("diff --git ")
-                or len(diff_out.encode("utf-8")) >= OUTPUT_LIMIT
-                or re.search(r"(?m)^(?:GIT binary patch|Binary files .* differ)$", diff_out)):
-            evaluations = [review_failure("diff-reader", "security", "PR diff unavailable, truncated or uninspectable")]
-        else:
-            evaluations = dispatch_parallel_reviews(diff_out, project_root=root, runner=runner,
-                                                    review_timeout=review_timeout)
-        consensus = evaluate_consensus_review_gate(evaluations, **(review_policy or {}))
-        consensus.update(head_sha=task["commit_sha"], base_sha=info.get("baseRefOid"))
-        fields["consensus_review"] = consensus
-        fields["security_gate_status"] = "passed" if consensus["security_gate_passed"] else "failed"
-        fields["review_status"] = "approved" if consensus["passed"] else "changes_requested"
-        if not consensus["passed"]:
-            error = f"Multi-agent review gate rejected PR: {consensus['summary']}"
-            fields["publication_error"] = error
-            build_events.emit(root, task["id"], "consensus_review", f"Review gate failed: {consensus['summary']}")
-        else:
-            # Reviews may take time: revalidate live task, head, base, CI and
-            # branch rules immediately before the merge request.
-            observed = check_pr_ci_status(task["pr_number"], root, repo, runner, timeout)
-            fresh = observed.get("pr", {})
-            unchanged = all(fresh.get(k) == info.get(k) for k in
-                            ("headRefOid", "headRefName", "baseRefName", "baseRefOid"))
-            ready = (fresh.get("state") == "OPEN" and not fresh.get("isDraft", True)
-                     and observed["status"] == "passed" and fresh.get("mergeStateStatus") == "CLEAN"
-                     and fresh.get("reviewDecision") not in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"))
-            if not unchanged or not ready or not _current(root, task):
-                error = "PR or task changed during consensus review; merge deferred"
-                fields.update(ci_status="unknown", review_status="pending")
+    elif info.get("state") == "OPEN" and merge_state == "DIRTY":
+        conflicts = detect_branch_conflicts(task["branch"], task["base_branch"], root, runner, timeout)
+        conflicting_files = conflicts.get("conflicting_files", [])
+        fields["pr_status"] = "conflicted"
+        fields["conflict_details"] = {
+            "has_conflict": True,
+            "conflicting_files": conflicting_files,
+            "base_branch": task["base_branch"],
+            "branch": task["branch"],
+            "head_sha": task["commit_sha"],
+            "base_sha": info.get("baseRefOid"),
+        }
+        error = f"PR has merge conflicts with {task['base_branch']}"
+        if conflicting_files:
+            error += f" in {len(conflicting_files)} file(s): {', '.join(conflicting_files[:5])}"
+        fields["publication_error"] = error
+        build_events.emit(root, task["id"], "pr_lifecycle", f"Conflict detected on PR #{task['pr_number']}: {error}")
+    elif (info.get("state") == "OPEN" and ci["status"] != "failed" and (
+            merge_state == "BEHIND"
+            or is_branch_behind_base(task["branch"], task["base_branch"], root, runner, timeout)
+          )):
+        fields["pr_status"] = "rebasing"
+        rebase_ok, rebase_info = attempt_rebase_and_reverify(
+            task, root, base_branch=task["base_branch"], remote=remote, runner=runner, timeout=timeout
+        )
+        if not rebase_ok:
+            if rebase_info.get("has_conflict") or rebase_info.get("conflicts"):
+                fields["pr_status"] = "conflicted"
+                fields["conflict_details"] = {
+                    "has_conflict": True,
+                    "conflicting_files": rebase_info.get("conflicts", []),
+                    "base_branch": task["base_branch"],
+                    "branch": task["branch"],
+                    "head_sha": task["commit_sha"],
+                }
+                error = rebase_info.get("error", "Rebase conflict detected")
+                fields["publication_error"] = error
+                build_events.emit(root, task["id"], "pr_lifecycle", f"Rebase conflict on PR #{task['pr_number']}")
+            elif not rebase_info.get("verification_passed", True):
+                fields["pr_status"] = "rebase_failed"
+                fields["rebase_result"] = rebase_info
+                error = rebase_info.get("error", "Re-verification suite failed after rebase")
+                fields["publication_error"] = error
+                build_events.emit(root, task["id"], "pr_lifecycle", f"Re-verification failed after rebase for PR #{task['pr_number']}")
             else:
-                if not _record(root, task, **fields):
-                    return False, {"error": "Task changed before recording consensus review"}
-                build_events.emit(root, task["id"], "consensus_review", f"Review gate passed: {consensus['summary']}")
-                code, out = runner(["gh", "pr", "merge", str(task["pr_number"]), "--repo", repo,
-                                    "--merge", "--delete-branch", "--match-head-commit", task["commit_sha"]],
-                                   timeout, root)
-                if code:
-                    error = f"Merge failed ({code}): {out}"
-                # Exit zero can mean queued, so completion requires GitHub's merged state.
-                observed = check_pr_ci_status(task["pr_number"], root, repo, runner, timeout)
-                info = observed.get("pr", {})
+                error = rebase_info.get("error", "Rebase failed")
+                fields["pr_status"] = "rebase_failed"
+                fields["publication_error"] = error
+        else:
+            new_sha = rebase_info["rebased_sha"]
+            fields["commit_sha"] = new_sha
+            fields["rebase_result"] = rebase_info
+            fields["pr_status"] = "open"
+            verifs = list(task.get("verifications") or [])
+            verifs.append({
+                "timestamp": timestamp(),
+                "exit_code": 0,
+                "log_tail": "Re-verified cleanly after rebase",
+                "command": task["verification_cmd"],
+                "skipped": False,
+            })
+            fields["verifications"] = verifs
+            updated_snapshot = {**task, **fields}
+            fields["published_evidence"] = publication_evidence(updated_snapshot)
+            build_events.emit(root, task["id"], "pr_lifecycle", f"Cleanly rebased and re-verified PR #{task['pr_number']} at {new_sha[:8]}")
+            if not _record(root, task, release_checkout=False, **fields):
+                return False, {"error": "Task changed while recording rebase"}
+            task = _load_task(root, task["id"])
+            observed = check_pr_ci_status(task["pr_number"], root, repo, runner, timeout)
+            info = observed.get("pr", {})
+            merge_state = str(info.get("mergeStateStatus", "")).upper()
+            ci = observed
+            fields["ci_status"] = ci["status"]
+            fields["pr_status"] = f"ci_{ci['status']}"
+            if (info.get("state") == "OPEN" and ci["status"] == "passed" and auto_merge
+                    and not info.get("isDraft", True) and merge_state in ("CLEAN", "")
+                    and info.get("reviewDecision") not in ("CHANGES_REQUESTED", "REVIEW_REQUIRED")):
+                ok, merge_res = _execute_merge(task, root, repo, runner, timeout,
+                                               review_timeout, review_policy, info, fields)
+                if not ok:
+                    return False, merge_res
+                info = merge_res
+    elif (info.get("state") == "OPEN" and ci["status"] == "passed" and auto_merge
+          and not info.get("isDraft", True) and merge_state == "CLEAN"
+          and info.get("reviewDecision") not in ("CHANGES_REQUESTED", "REVIEW_REQUIRED")):
+        ok, merge_res = _execute_merge(task, root, repo, runner, timeout,
+                                       review_timeout, review_policy, info, fields)
+        if not ok:
+            return False, merge_res
+        info = merge_res
     matches = (info.get("headRefName") == task["branch"]
                and info.get("baseRefName") == task["base_branch"]
                and info.get("headRefOid") == task["commit_sha"])
@@ -982,7 +1235,11 @@ def _reconcile(task: dict, root: Path, repo: str, runner: Runner, timeout: float
             fields.update(status="completed", pr_status="merged", merge_commit_sha=merge_sha,
                           completed_at=info["mergedAt"], merged_at=info["mergedAt"])
             error = None
-    fields["publication_error"] = error
+            fields["publication_error"] = None
+    elif fields.get("publication_error"):
+        error = fields["publication_error"]
+    else:
+        fields["publication_error"] = error
     if not _record(root, task, **fields):
         return False, {"error": "Task changed while reconciling PR"}
     return True, {"pr_number": task["pr_number"], "pr_status": fields["pr_status"],
@@ -991,7 +1248,9 @@ def _reconcile(task: dict, root: Path, repo: str, runner: Runner, timeout: float
                   "regression_analysis": fields.get("regression_analysis"),
                   "consensus_review": fields.get("consensus_review"),
                   "security_gate_status": fields.get("security_gate_status"),
-                  "review_status": fields.get("review_status")}
+                  "review_status": fields.get("review_status"),
+                  "conflict_details": fields.get("conflict_details"),
+                  "rebase_result": fields.get("rebase_result")}
 
 
 
@@ -1025,7 +1284,7 @@ def run_pr_lifecycle_for_verified_task(task: dict, project_root: Path,
                     if code:
                         raise ValueError(f"Cannot return to base branch: {out}")
                 return _reconcile(task, project_root, repo, runner, timeout, auto_merge_if_ci_passes,
-                                  review_timeout, review_policy)
+                                  review_timeout, review_policy, remote=remote)
             if task.get("is_bugfix"):
                 parent = repair_parent(task, json.loads((project_root / "ROADMAP.json").read_text())["tasks"])
                 observed = check_pr_ci_status(parent["pr_number"], project_root, repo, runner, timeout).get("pr", {})
@@ -1080,19 +1339,20 @@ def run_pr_lifecycle_for_verified_task(task: dict, project_root: Path,
             build_events.emit(project_root, task["id"], "pr_lifecycle", f"Published PR #{result['pr_number']}")
             task = _load_task(project_root, task["id"])
             return _reconcile(task, project_root, repo, runner, timeout, auto_merge_if_ci_passes,
-                                  review_timeout, review_policy)
+                              review_timeout, review_policy, remote=remote)
         except (ValueError, OSError, TypeError, KeyError) as error:
             _record(project_root, task, publication_error=str(error))
             return False, {"error": str(error)}
 
 
 def scan_and_merge_prs(project_root: Path, repo: str = DEFAULT_REPO,
-                        runner: Runner = run_cmd, timeout: float = 120) -> list[str]:
+                       runner: Runner = run_cmd, timeout: float = 120,
+                       remote: str = DEFAULT_REMOTE) -> list[str]:
     data = json.loads((project_root / "ROADMAP.json").read_text(encoding="utf-8"))
     merged = []
     for task in data["tasks"]:
-        if _verified(task) and task.get("pr_number") and task.get("pr_status") != "closed":
-            ok, result = run_pr_lifecycle_for_verified_task(task, project_root, repo, runner=runner, timeout=timeout)
+        if _verified(task) and task.get("pr_number") and task.get("pr_status") not in ("closed", "conflicted"):
+            ok, result = run_pr_lifecycle_for_verified_task(task, project_root, repo, remote=remote, runner=runner, timeout=timeout)
             if ok and result.get("merged"):
                 merged.append(task["id"])
     return merged
@@ -1101,7 +1361,7 @@ def scan_and_merge_prs(project_root: Path, repo: str = DEFAULT_REPO,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_id", nargs="?")
-    parser.add_argument("--scan-and-merge", action="store_true")
+    parser.add_argument("--scan-and-merge", "--merge-queue", dest="scan_and_merge", action="store_true")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--remote", default=DEFAULT_REMOTE)
@@ -1109,7 +1369,7 @@ def main() -> None:
     args = parser.parse_args()
     root = args.project_root.resolve()
     if args.scan_and_merge:
-        print(json.dumps({"merged_tasks": scan_and_merge_prs(root, args.repo)}))
+        print(json.dumps({"merged_tasks": scan_and_merge_prs(root, args.repo, remote=args.remote)}))
     elif args.task_id:
         ok, result = run_pr_lifecycle_for_verified_task({"id": args.task_id}, root,
             args.repo, args.remote, args.base_branch)

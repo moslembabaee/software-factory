@@ -28,6 +28,8 @@ class GitHubStub:
             if isinstance(argv, list) and argv[:2] == ["git", "push"] and result[0] == 0 and self.pr:
                 self.pr["headRefOid"] = subprocess.check_output(
                     ["git", "rev-parse", self.pr["headRefName"]], cwd=root, text=True).strip()
+                if self.merge_state == "BEHIND":
+                    self.merge_state = "CLEAN"
             return result
         self.calls.append(argv)
         if self.offline:

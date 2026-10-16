@@ -19,3 +19,6 @@ tmp/
 *.tar.gz
 # Shared advisory lock for roadmap writers.
 ROADMAP.json.lock
+# Git worktrees for parallel execution
+.worktrees/
+worktrees/

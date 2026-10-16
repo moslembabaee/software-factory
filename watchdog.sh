@@ -19,6 +19,11 @@ fi
 # 2. Check if orchestrator is alive; if not, restart it
 if ! tmux has-session -t software-factory-orchestrator 2>/dev/null; then
     echo "[$NOW] [WATCHDOG] ⚠️ Orchestrator process NOT FOUND! Reviving in tmux..." >> "$LOG_FILE"
+    # Ensure codebase-memory index is ready before starting work
+    if ! /root/.local/bin/codebase-memory-mcp cli index_status --project root-projects-software-factory --quiet 2>/dev/null | grep -q "ready"; then
+        echo "[$NOW] [WATCHDOG] Index missing — indexing software-factory..." >> "$LOG_FILE"
+        /usr/local/bin/cbm-index /root/projects/software-factory >> "$LOG_FILE" 2>&1
+    fi
     tmux kill-session -t software-factory-orchestrator 2>/dev/null || true
     tmux new-session -d -s software-factory-orchestrator "cd $PROJECT_DIR && python3 orchestrator.py"
     echo "[$NOW] [WATCHDOG] ✅ Orchestrator revived." >> "$LOG_FILE"
@@ -37,6 +42,16 @@ if ! ss -tlnp | grep -q ':3003 .*docker-proxy'; then
     echo "[$NOW] [WATCHDOG] ⚠️ SF port 3003 (docker-proxy) is missing! Restarting container..." >> "$LOG_FILE"
     docker restart software-factory_web software-factory-postgres-1 2>&1 | head -5 >> "$LOG_FILE"
     echo "[$NOW] [WATCHDOG] ✅ SF containers restarted to recreate proxy." >> "$LOG_FILE"
+fi
+
+# 2d. Event-driven CBM update: if HEAD changed since last index, run detect_changes
+CBM_STATE="/root/.cache/codebase-memory-mcp/.last_head-software-factory"
+CBM_HEAD=$(git -C "$PROJECT_DIR" log -1 --format=%H 2>/dev/null)
+if [ -n "$CBM_HEAD" ] && [ "$CBM_HEAD" != "$(cat "$CBM_STATE" 2>/dev/null)" ]; then
+    echo "[$NOW] [WATCHDOG] New commit detected ($CBM_HEAD) — updating CBM index..." >> "$LOG_FILE"
+    /root/.local/bin/codebase-memory-mcp cli detect_changes --project root-projects-software-factory --quiet >> "$LOG_FILE" 2>&1
+    echo "$CBM_HEAD" > "$CBM_STATE"
+    echo "[$NOW] [WATCHDOG] ✅ CBM index updated." >> "$LOG_FILE"
 fi
 
 # 3. SELF-REFLECTION & PROGRESS STALENESS CHECK

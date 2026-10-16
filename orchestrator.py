@@ -130,7 +130,7 @@ def execute_agent_task(
 ) -> tuple[int, str]:
     commands = {
         "claude": ["env", "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1",
-                   "claude", "-p", prompt, "--max-turns", "40"],
+                   "claude", "-p", prompt, "--max-turns", "80"],
         "codex": ["codex", "exec", "--sandbox", "workspace-write", "-c",
                   'model_reasoning_effort="high"', prompt],
         "antigravity": ["agy", "-p", prompt, "--model", "gemini-3.8-flash-high",

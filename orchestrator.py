@@ -8,15 +8,18 @@ from the tenant-scoped API/sandbox runtime; never feed it untrusted tenant input
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import dataclasses
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import fcntl
 import json
 import math
+from pathlib import Path
 import re
 import signal
+import threading
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable, Literal
 
 import build_events
@@ -26,6 +29,8 @@ import roadmap_store
 import pr_lifecycle
 import roadmap_sync
 import verify_task
+import workspace
+import worktree
 from command_runner import OUTPUT_LIMIT, run_cmd
 from issue_lifecycle import (
     IGNORED_LABELS, issue_number_for_task, label_names, mark_issue_closed,
@@ -61,10 +66,15 @@ class RuntimeConfig:
     poll_seconds: float = 5
     default_budget_cap_usd: float | None = None
     token_rates: dict[str, dict[str, float]] | None = None
+    use_worktrees: bool = False
+    concurrency: int = 1
+    worktree_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.agent_timeout) or self.agent_timeout <= 0:
             raise ValueError("agent_timeout must be finite and positive")
+        if self.concurrency < 1:
+            raise ValueError("concurrency must be at least 1")
         telemetry.budget_cap({}, self.default_budget_cap_usd)
         for rates in (self.token_rates or AGENT_RATES).values():
             for key in ("prompt", "completion"):
@@ -201,6 +211,14 @@ Leave Git commits, pushes, and roadmap lifecycle updates to the orchestrator.
 class AgentRuntime:
     def __init__(self, config: RuntimeConfig = RuntimeConfig()):
         self.config = config
+        self.worktree_manager = worktree.WorktreeManager(
+            self.config.project_root,
+            worktree_dir=self.config.worktree_dir,
+            base_branch=self.config.branch,
+            runner=run_cmd,
+            timeout=self.config.git_timeout,
+        )
+        self._reconciliation_lock = threading.Lock()
 
     def load(self) -> dict:
         return json.loads(self.config.roadmap_file.read_text(encoding="utf-8"))
@@ -213,8 +231,10 @@ class AgentRuntime:
         def apply(data: dict) -> bool:
             task = next((t for t in data["tasks"] if t["id"] == task_id), None)
             if (not task or task.get("closed_at") or
-                    task.get("status") not in statuses or
-                    data.get("current_task_id") != task_id):
+                    task.get("status") not in statuses):
+                return False
+            active = data.get("active_task_ids") or []
+            if data.get("current_task_id") != task_id and task_id not in active:
                 return False
             change(task, data)
             return True
@@ -255,15 +275,18 @@ class AgentRuntime:
             log(self.config, f"Deferring {task['id']}: invalid issue response")
             return False
 
-    def claim(self, *, bugfix_only: bool = False) -> dict | None:
+    def claim(self, *, bugfix_only: bool = False, allow_parallel: bool = False) -> dict | None:
         data = self.load()
-        if data.get("current_task_id"):
+        active = data.get("active_task_ids") or []
+        if data.get("current_task_id") and not allow_parallel:
             return None  # Crash recovery is explicit; do not steal another task.
         for candidate in sorted(data["tasks"], key=lambda t: not t.get("is_bugfix", False)):
             if bugfix_only and not candidate.get("is_bugfix"):
                 continue
             if (candidate.get("status") != "approved" or
                     candidate.get("closed_at") or not self.eligible(candidate)):
+                continue
+            if candidate["id"] in active:
                 continue
             # Before another implementation, bring base forward to the merged PR.
             # Control files are excluded from PR commits, so their live edits stay.
@@ -279,14 +302,18 @@ class AgentRuntime:
 
             def apply(latest: dict) -> bool:
                 nonlocal claimed
-                if latest.get("current_task_id"):
+                if latest.get("current_task_id") and not allow_parallel:
                     return False
                 task = next((t for t in latest["tasks"] if t["id"] == candidate["id"]), None)
                 if not task or task.get("status") != "approved" or task.get("closed_at"):
                     return False
                 task["status"] = "in_progress"
                 task["started_at"] = timestamp()
-                latest["current_task_id"] = task["id"]
+                if not latest.get("current_task_id"):
+                    latest["current_task_id"] = task["id"]
+                latest.setdefault("active_task_ids", [])
+                if task["id"] not in latest["active_task_ids"]:
+                    latest["active_task_ids"].append(task["id"])
                 claimed = dict(task)
                 return True
 
@@ -305,6 +332,15 @@ class AgentRuntime:
                 return claimed
         return None
 
+    def claim_multiple(self, max_tasks: int) -> list[dict]:
+        claimed: list[dict] = []
+        for _ in range(max_tasks):
+            t = self.claim(allow_parallel=True)
+            if not t:
+                break
+            claimed.append(t)
+        return claimed
+
     def finish(self, task_id: str, status: str, **fields: object) -> bool:
         def apply(task: dict, data: dict) -> None:
             task.update(fields)
@@ -313,7 +349,12 @@ class AgentRuntime:
             if status == "completed":
                 task.pop("failure_analysis", None)
                 task.pop("failure_summary", None)
-            data["current_task_id"] = None
+            if data.get("current_task_id") == task_id:
+                data["current_task_id"] = None
+            if "active_task_ids" in data and task_id in data["active_task_ids"]:
+                data["active_task_ids"].remove(task_id)
+                if not data["active_task_ids"]:
+                    data.pop("active_task_ids", None)
         return self.update(task_id, apply, ("in_progress", "ready_for_verification", "verified"))
 
     def publish(self, task: dict) -> tuple[bool, str]:
@@ -344,8 +385,15 @@ class AgentRuntime:
             log(self.config, f"{task['id']}: {latest['consensus_review'].get('summary', '')}", task["id"])
         return "completed" if latest["status"] == "completed" else "ci_pending"
 
-    def execute(self, task: dict) -> str:
+    def execute(
+        self,
+        task: dict,
+        execution_root: Path | None = None,
+        config_override: RuntimeConfig | None = None,
+    ) -> str:
         task_id = task["id"]
+        cfg = config_override or self.config
+        root = execution_root or cfg.project_root
         verification = task.get("verification_cmd")
         if not isinstance(verification, str) or not verification.strip():
             self.finish(task_id, "failed", last_error="Missing verification_cmd; dispatch refused")
@@ -357,25 +405,26 @@ class AgentRuntime:
             except ValueError as error:
                 self.finish(task_id, "failed", last_error=str(error))
                 return "failed"
-            info = pr_lifecycle.check_pr_ci_status(parent.get("pr_number"), self.config.project_root,
-                self.config.repo, run_cmd, self.config.git_timeout).get("pr", {})
+            info = pr_lifecycle.check_pr_ci_status(parent.get("pr_number"), root,
+                cfg.repo, run_cmd, cfg.git_timeout).get("pr", {})
             if (info.get("state") != "OPEN" or info.get("headRefOid") != task.get("source_commit_sha")
                     or info.get("headRefName") != task.get("target_branch")
                     or info.get("baseRefName") != parent.get("base_branch")):
                 self.finish(task_id, "failed", last_error="CI repair parent or PR changed before dispatch")
                 return "failed"
             for command in (["git", "checkout", task["target_branch"]], ["git", "rev-parse", "HEAD"]):
-                code, output = run_cmd(command, self.config.git_timeout, self.config.project_root)
+                code, output = run_cmd(command, cfg.git_timeout, root)
                 if code or (command[1] == "rev-parse" and output.strip() != task["source_commit_sha"]):
                     self.finish(task_id, "failed", last_error=f"CI repair checkout differs from failing head: {output}")
                     return "failed"
+        checkpoint = workspace.create_checkpoint(root, task_id=task_id)
         feedback = None
         for agent in agent_order(task.get("assigned_agent", "claude")):
             blocked = False
 
             def dispatch(current: dict, _data: dict) -> None:
                 nonlocal blocked
-                current["telemetry"] = telemetry.task_telemetry(current, self.config.default_budget_cap_usd)
+                current["telemetry"] = telemetry.task_telemetry(current, cfg.default_budget_cap_usd)
                 blocked = current["telemetry"]["budget"]["exceeded"]
                 if not blocked:
                     current["active_attempt"] = {"agent": agent, "phase": "agent", "started_at": timestamp()}
@@ -385,11 +434,11 @@ class AgentRuntime:
             if blocked:
                 self.finish(task_id, "failed", last_error="Budget limit reached; dispatch refused")
                 return "failed"
-            log(self.config, f"Dispatching {task_id} to {agent}", task_id)
-            prompt = build_prompt(task, self.config, feedback, agent=agent)
+            log(cfg, f"Dispatching {task_id} to {agent}", task_id)
+            prompt = build_prompt(task, cfg, feedback, agent=agent)
             started = time.monotonic()
             try:
-                code, output = execute_agent_task(agent, prompt, self.config)
+                code, output = execute_agent_task(agent, prompt, cfg)
             except Exception as error:
                 code, output = -2, f"Runtime error: {error}"
                 failure = "runtime"
@@ -400,7 +449,7 @@ class AgentRuntime:
             tokens, estimated = telemetry.token_usage(prompt, output)
             if code == -2:  # Spawn/runtime failure did not reach the provider.
                 tokens, estimated = {"prompt": 0, "completion": 0, "total": 0}, False
-            cost = telemetry.token_cost(agent, tokens, self.config.token_rates)
+            cost = telemetry.token_cost(agent, tokens, cfg.token_rates)
             verify_code = None
             verify_duration = 0.0
             verification_outcome = None
@@ -415,7 +464,7 @@ class AgentRuntime:
 
             def record(current: dict, _data: dict) -> None:
                 nonlocal index, budget_reached
-                telemetry.record_attempt(current, asdict(attempt), self.config.default_budget_cap_usd)
+                telemetry.record_attempt(current, asdict(attempt), cfg.default_budget_cap_usd)
                 index = len(current["attempts"]) - 1
                 budget_reached = current["telemetry"]["budget"]["exceeded"]
                 current.pop("active_attempt", None)
@@ -434,11 +483,11 @@ class AgentRuntime:
             if not self.update(task_id, record, ("in_progress", "ready_for_verification")):
                 return "cancelled"
             if not failure and not budget_reached:
-                log(self.config, f"Verifying {task_id}: {verification}", task_id)
+                log(cfg, f"Verifying {task_id}: {verification}", task_id)
                 started = time.monotonic()
                 try:
-                    result = verify_task.verify_task(task_id, self.config.project_root,
-                        timeout=self.config.verification_timeout, runner=run_cmd)
+                    result = verify_task.verify_task(task_id, root,
+                        timeout=cfg.verification_timeout, runner=run_cmd)
                 except Exception as error:
                     result = verify_task.VerificationResult("failed", -2, f"Runtime error: {error}")
                 verify_duration = round(time.monotonic() - started, 3)
@@ -459,8 +508,8 @@ class AgentRuntime:
                 stats = current["telemetry"]
                 stats["duration_seconds"] = round(stats["duration_seconds"] + verify_duration, 3)
                 stats["verification_duration_seconds"] = round(stats["verification_duration_seconds"] + verify_duration, 3)
-                stats["budget"]["cap_usd"] = telemetry.budget_cap(current, self.config.default_budget_cap_usd)
-                current["telemetry"] = telemetry.task_telemetry(current, self.config.default_budget_cap_usd)
+                stats["budget"]["cap_usd"] = telemetry.budget_cap(current, cfg.default_budget_cap_usd)
+                current["telemetry"] = telemetry.task_telemetry(current, cfg.default_budget_cap_usd)
                 budget_reached = current["telemetry"]["budget"]["exceeded"]
                 if failure and attempt.failure is None:
                     modes = current["telemetry"]["failure_modes"]
@@ -483,9 +532,16 @@ class AgentRuntime:
 
             if not self.update(task_id, finalize, ("in_progress", "ready_for_verification", "verified")):
                 return "cancelled"
-            log(self.config, f"{task_id} telemetry: {tokens['total']} tokens (${cost:.6f} estimated cost), "
+            log(cfg, f"{task_id} telemetry: {tokens['total']} tokens (${cost:.6f} estimated cost), "
                 f"latency {agent_duration + verify_duration:.2f}s", task_id)
             if budget_reached:
+                workspace.rollback_workspace(
+                    root,
+                    checkpoint=checkpoint,
+                    clean_untracked=True,
+                    restore_roadmap=False,
+                    reason="unrecoverable_failure",
+                )
                 self.finish(task_id, "failed", last_error="Budget limit reached; further execution refused")
                 return "failed"
             if verification_outcome and verification_outcome not in {"verified", "failed"}:
@@ -495,16 +551,130 @@ class AgentRuntime:
                     feedback = analysis
                 else:
                     feedback = f"{agent}: {failure}\n{output[-4000:]}"
-                log(self.config, f"{task_id}: {agent} failed ({failure}); advancing failover chain", task_id)
+                log(cfg, f"{task_id}: {agent} failed ({failure}); advancing failover chain", task_id)
                 continue
             if not self.update(task_id, lambda current, _data: (
                     current.update(completed_agent=agent, last_error=None),
                     current.pop("failure_analysis", None),
                     current.pop("failure_summary", None)), ("verified",)):
                 return "cancelled"
+            if execution_root:
+                return "verified"
             return self.publish_verified(task)
+        workspace.rollback_workspace(
+            root,
+            checkpoint=checkpoint,
+            clean_untracked=True,
+            restore_roadmap=False,
+            reason="verification_failure_limit",
+        )
         self.finish(task_id, "failed")
         return "failed"
+
+    def execute_in_worktree(self, task: dict) -> str:
+        task_id = task["id"]
+        log(self.config, f"Setting up isolated worktree for {task_id}", task_id)
+        try:
+            wt_info = self.worktree_manager.create_worktree(task_id, base_branch=self.config.branch)
+        except Exception as err:
+            log(self.config, f"Failed to create worktree for {task_id}: {err}", task_id)
+            self.finish(task_id, "failed", last_error=f"Worktree creation failed: {err}")
+            return "failed"
+
+        task_config = dataclasses.replace(self.config, project_root=wt_info.path)
+        try:
+            outcome = self.execute(task, execution_root=wt_info.path, config_override=task_config)
+            if outcome not in ("completed", "verified"):
+                log(self.config, f"Task {task_id} failed in worktree ({outcome}); cleaning up workspace", task_id)
+                self.worktree_manager.cleanup_worktree(task_id)
+                return outcome
+
+            # Verification succeeded in worktree!
+            # Commit changes inside worktree if any exist
+            run_cmd(["git", "add", "--all"], self.config.git_timeout, wt_info.path)
+            run_cmd(
+                ["git", "-c", "commit.gpgsign=false", "commit", "-m", f"feat({task_id}): {task['title']}"],
+                self.config.git_timeout,
+                wt_info.path,
+            )
+
+            with self._reconciliation_lock:
+                # Automated conflict detection against baseline branch
+                log(self.config, f"Checking conflicts for {task_id} against {self.config.branch}", task_id)
+                conflict_res = self.worktree_manager.detect_conflicts(task_id, base_branch=self.config.branch)
+                if conflict_res.has_conflict:
+                    log(self.config, f"Reconciliation conflict in {task_id}: {conflict_res.error}", task_id)
+                    self.worktree_manager.cleanup_worktree(task_id)
+                    self.finish(
+                        task_id,
+                        "failed",
+                        last_error=conflict_res.error or "Conflict detected during worktree reconciliation",
+                        conflict_details=conflict_res.to_dict(),
+                    )
+                    return "failed"
+
+                # Baseline branch merge reconciliation upon task verification success
+                log(self.config, f"Reconciling and merging {task_id} into {self.config.branch}", task_id)
+                reconcile_res = self.worktree_manager.reconcile_and_merge(
+                    task_id,
+                    commit_message=f"feat({task_id}): {task['title']}",
+                    base_branch=self.config.branch,
+                    cleanup=True,
+                )
+                if not reconcile_res.success:
+                    log(self.config, f"Reconciliation merge failed for {task_id}: {reconcile_res.error}", task_id)
+                    self.finish(
+                        task_id,
+                        "failed",
+                        last_error=reconcile_res.error or "Failed to reconcile worktree into baseline branch",
+                    )
+                    return "failed"
+
+                # Update task commit SHA and publish
+                self.update(task_id, lambda current, _data: current.update(commit_sha=reconcile_res.merged_sha), ("verified",))
+                return self.publish_verified(task)
+        except Exception as ex:
+            log(self.config, f"Worktree execution error for {task_id}: {ex}", task_id)
+            self.worktree_manager.cleanup_worktree(task_id)
+            self.finish(task_id, "failed", last_error=f"Worktree execution error: {ex}")
+            return "failed"
+
+    def execute_parallel(self, tasks: list[dict], max_workers: int = 2) -> dict[str, str]:
+        """Execute multiple tasks in parallel across isolated git worktrees."""
+        if not tasks:
+            return {}
+
+        results: dict[str, str] = {}
+        task_ids = [t["id"] for t in tasks]
+        log(self.config, f"Starting parallel execution of {len(tasks)} tasks across worktrees: {', '.join(task_ids)}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.execute_in_worktree, t): t["id"]
+                for t in tasks
+            }
+            for future in concurrent.futures.as_completed(futures):
+                tid = futures[future]
+                try:
+                    outcome = future.result()
+                    results[tid] = outcome
+                    log(self.config, f"Parallel task {tid} completed with outcome: {outcome}", tid)
+                except Exception as ex:
+                    results[tid] = "failed"
+                    log(self.config, f"Parallel task {tid} raised exception: {ex}", tid)
+                    self.finish(tid, "failed", last_error=str(ex))
+
+        # Stale worktree cleanup after parallel batch
+        active = [t["id"] for t in self.load()["tasks"] if t.get("status") == "in_progress"]
+        self.worktree_manager.cleanup_stale_worktrees(active_task_ids=active)
+        return results
+
+    def run_once_parallel(self, max_workers: int = 2) -> dict[str, str]:
+        """Run up to max_workers eligible tasks concurrently in isolated worktrees."""
+        tasks = self.claim_multiple(max_workers)
+        if not tasks:
+            return {}
+        return self.execute_parallel(tasks, max_workers=max_workers)
 
     def run_once(self) -> str:
         directory = self.config.project_root / "logs"
@@ -516,6 +686,18 @@ class AgentRuntime:
                 return "busy"
             if (self.config.project_root / "STOP_IMPROVEMENTS").exists():
                 return "stopped"
+            corrupt, _ = workspace.detect_roadmap_corruption(self.config.roadmap_file)
+            if corrupt:
+                workspace.reconcile_workspace_drift(self.config.project_root)
+            if self.config.concurrency > 1:
+                results = self.run_once_parallel(max_workers=self.config.concurrency)
+                if not results:
+                    return "idle"
+                if any(outcome == "completed" for outcome in results.values()):
+                    return "completed"
+                if any(outcome == "failed" for outcome in results.values()):
+                    return "failed"
+                return "in_progress"
             data = self.load()
             current = data.get("current_task_id")
             repairing = {t["parent_task_id"] for t in data["tasks"] if t.get("is_bugfix")
@@ -554,6 +736,8 @@ class AgentRuntime:
                     if result.outcome == "verified":
                         return self.publish_verified(task)
                     return result.outcome
+                if self.config.use_worktrees:
+                    return self.execute_in_worktree(task)
                 return self.execute(task)
             except Exception as error:
                 self.finish(task["id"], "failed", last_error=f"Runtime error: {error}")
@@ -578,11 +762,14 @@ def main() -> None:
     parser.add_argument("--budget-cap-usd", type=float, default=None)
     parser.add_argument("--token-rates-json", type=json.loads, default=None,
                         help="Agent prompt/completion USD rates per million tokens")
+    parser.add_argument("--use-worktrees", action="store_true", help="Enable isolated git worktree task execution")
+    parser.add_argument("--concurrency", type=int, default=1, help="Max parallel tasks to execute across worktrees")
     args = parser.parse_args()
     runtime = AgentRuntime(RuntimeConfig(
         project_root=args.project_root.resolve(), repo=args.repo,
         remote=args.remote, branch=args.branch, agent_timeout=args.agent_timeout,
         default_budget_cap_usd=args.budget_cap_usd, token_rates=args.token_rates_json,
+        use_worktrees=args.use_worktrees, concurrency=args.concurrency,
     ))
     def stop(_signum: int, _frame: object) -> None:
         # Let run_cmd terminate its active process group before exiting.

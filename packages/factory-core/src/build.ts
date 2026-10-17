@@ -130,6 +130,7 @@ export type BuildSnapshot = z.infer<typeof BuildSnapshotSchema>;
 export type TaskTokens = z.infer<typeof TaskTokensSchema>;
 export type TaskBudget = z.infer<typeof TaskBudgetSchema>;
 export type TaskTelemetry = z.infer<typeof TaskTelemetrySchema>;
+export type AgentMetrics = z.infer<typeof AgentMetricsSchema>;
 export type BuildMetrics = z.infer<typeof BuildMetricsSchema>;
 export type BuildMetricsBudget = z.infer<typeof BuildMetricsBudgetSchema>;
 export type BuildBudgetUpdate = z.infer<typeof BuildBudgetUpdateSchema>;

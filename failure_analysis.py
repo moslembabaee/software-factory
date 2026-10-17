@@ -10,9 +10,11 @@ Never feed it untrusted tenant input.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 DiagnosticCategory = Literal[
     "test_failure",
@@ -24,6 +26,36 @@ DiagnosticCategory = Literal[
     "timeout",
     "unknown",
 ]
+
+ConfidenceLevel = Literal["high", "medium", "low"]
+DiffFileStatus = Literal["modified", "added", "deleted", "untracked", "unknown"]
+
+
+@dataclass
+class CorrelatedFile:
+    """A file in recent diff correlated with failure diagnostics."""
+    file: str
+    status: DiffFileStatus = "modified"
+    implicated: bool = True
+    error_types: list[str] = field(default_factory=list)
+    error_lines: list[int] = field(default_factory=list)
+    confidence: ConfidenceLevel = "medium"
+    relevance: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class DiffFileInfo:
+    """Information about a changed file in the recent diff."""
+    path: str
+    status: DiffFileStatus = "modified"
+    added_lines: list[int] = field(default_factory=list)
+    modified_lines: list[int] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 SECRET_PATTERNS = re.compile(
     r"(?i)\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|bearer\s+[a-zA-Z0-9._-]{20,}|(?:-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----))",

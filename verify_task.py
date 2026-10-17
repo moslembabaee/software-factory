@@ -45,6 +45,7 @@ def verify_task(
     task_id: str, project_root: Path = PROJECT_ROOT, *, timeout: float = 300,
     dry_run: bool = False,
     runner: Callable[[str, float, Path], tuple[int, str]] = run_cmd,
+    worktree_path: Path | None = None,
 ) -> VerificationResult:
     """Verify one active task, merging only verification fields into its live record.
 
@@ -56,6 +57,7 @@ def verify_task(
         raise ValueError("Verification timeout must be finite and positive")
     project_root = Path(project_root).resolve()
     path = project_root / "ROADMAP.json"
+    run_dir = Path(worktree_path).resolve() if worktree_path else project_root
 
     def load_task() -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -67,10 +69,10 @@ def verify_task(
     initial = load_task()
     if dry_run:
         note = ("Verification skipped: no verification_cmd configured" if missing_command(initial)
-                else f"Would run in {project_root} (timeout {timeout}s): {initial['verification_cmd']}")
+                else f"Would run in {run_dir} (timeout {timeout}s): {initial['verification_cmd']}")
         return VerificationResult("dry_run", note=note)
 
-    directory = project_root / "logs"
+    directory = (run_dir / "logs") if worktree_path else (project_root / "logs")
     directory.mkdir(exist_ok=True)
     with (directory / "verification.lock").open("a") as lock:
         try:
@@ -89,7 +91,7 @@ def verify_task(
             code, tail = None, ""
             note = "Verification skipped: no verification_cmd configured"
         else:
-            code, output = runner(initial["verification_cmd"], timeout, project_root)
+            code, output = runner(initial["verification_cmd"], timeout, run_dir)
             tail, note = output[-LOG_LIMIT:], ""
             if code != 0:
                 # Analyze the transport's bounded capture before reducing the

@@ -1,9 +1,13 @@
 """Trusted API bridge to the repository scheduler's atomic roadmap store."""
+from __future__ import annotations
+
 import hashlib
 import json
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
+import queue
+import sys
+import time
+from datetime import datetime, timezone
 
 import build_events
 import roadmap_store
@@ -47,6 +51,66 @@ def snapshot(path: Path, identity: dict, project_id: str) -> dict:
     ])
     return {"tasks": tasks, "current_task_id": current if current in ids else None,
             "logs": build_events.tail(path.parent, ids), "metrics": metrics}
+
+
+def stream_dashboard(
+    path: Path,
+    identity: dict,
+    project_id: str,
+    timeout: float | None = None,
+    heartbeat: float = 15.0,
+    bus: build_events.EventBus | None = None,
+):
+    """Stream real-time updates for a project's build dashboard without client-side polling.
+
+    Yields initial snapshot immediately, then streams task transitions, agent logs,
+    and telemetry updates for tasks belonging to the authorized tenant and project.
+    """
+    bus = bus or build_events.GLOBAL_BUS
+    init_snap = snapshot(path, identity, project_id)
+    yield build_events.format_sse("snapshot", init_snap)
+
+    visible_ids = {t["id"] for t in init_snap["tasks"]}
+    q = bus.subscribe()
+    start = time.time()
+    try:
+        while True:
+            if timeout is not None and (time.time() - start) >= timeout:
+                break
+            try:
+                event = q.get(timeout=heartbeat)
+                etype = event.get("event_type", "agent_log")
+                task_id = event.get("task_id")
+
+                if etype == "roadmap_sync":
+                    current_snap = snapshot(path, identity, project_id)
+                    visible_ids = {t["id"] for t in current_snap["tasks"]}
+                    yield build_events.format_sse("snapshot", current_snap)
+                    yield build_events.format_sse("roadmap_sync", event, event_id=event.get("id"))
+                    continue
+
+                if task_id:
+                    if task_id not in visible_ids:
+                        current_snap = snapshot(path, identity, project_id)
+                        new_ids = {t["id"] for t in current_snap["tasks"]}
+                        if task_id in new_ids:
+                            visible_ids = new_ids
+                            yield build_events.format_sse("snapshot", current_snap)
+                        else:
+                            continue
+
+                    yield build_events.format_sse(etype, event, event_id=event.get("id"))
+
+                    if etype == "task_transition":
+                        current_snap = snapshot(path, identity, project_id)
+                        yield build_events.format_sse("snapshot", current_snap)
+                elif etype in ("roadmap_sync", "snapshot"):
+                    current_snap = snapshot(path, identity, project_id)
+                    yield build_events.format_sse("snapshot", current_snap)
+            except queue.Empty:
+                yield ": keepalive\n\n"
+    finally:
+        bus.unsubscribe(q)
 
 
 def set_budget(path: Path, identity: dict, project_id: str, task_id: str, expected: str, cap) -> dict:
@@ -99,6 +163,7 @@ def approve(path: Path, identity: dict, project_id: str, task_id: str, expected:
     changed = roadmap_store.update_roadmap(path, update)
     if changed:
         build_events.emit(path.parent, task_id, "dashboard", "Task approved for dispatch")
+        build_events.emit_task_transition(path.parent, task_id, "approved", source="dashboard")
     return result
 
 
@@ -106,11 +171,18 @@ if __name__ == "__main__":
     path = Path(sys.argv[1])
     request = json.load(sys.stdin)
     result = {}
-    if request["operation"] == "approve":
+    if request.get("operation") == "approve":
         result = approve(path, request["identity"], request["projectId"], request["taskId"], request["revision"])
-    if request["operation"] == "budget":
+    elif request.get("operation") == "budget":
         result = set_budget(path, request["identity"], request["projectId"], request["taskId"],
                             request["revision"], request["budget_cap_usd"])
+    elif request.get("operation") == "stream":
+        for chunk in stream_dashboard(path, request["identity"], request["projectId"],
+                                      timeout=request.get("timeout"),
+                                      heartbeat=request.get("heartbeat", 15.0)):
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        sys.exit(0)
     if "error" not in result:
         result = snapshot(path, request["identity"], request["projectId"])
     print(json.dumps(result))

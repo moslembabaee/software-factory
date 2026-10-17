@@ -27,11 +27,23 @@ export {
   DiagnosticCategorySchema,
   FailureDiagnosticSchema,
   FailureAnalysisSchema,
+  ConfidenceLevelSchema,
+  DiffFileStatusSchema,
+  CorrelatedFileSchema,
+  LocalizedRemediationTaskSchema,
+  correlateFailureWithDiff,
+  generateRemediationTaskId,
+  synthesizeRemediationTask,
 } from "./failure-analysis.js";
 export type {
   DiagnosticCategory,
   FailureDiagnostic,
   FailureAnalysis,
+  ConfidenceLevel,
+  DiffFileStatus,
+  CorrelatedFile,
+  LocalizedRemediationTask,
+  DiffFileInfo,
 } from "./failure-analysis.js";
 export {
   ExecutionSchema,
@@ -152,3 +164,71 @@ export type {
   DiffFileInput,
   ReviewInput,
 } from "./pr-lifecycle.js";
+export {
+  WorktreeStatusSchema,
+  WorktreeInfoSchema,
+  WorktreeConflictDetailsSchema,
+  WorktreeReconciliationResultSchema,
+  ConcurrentExecutionConfigSchema,
+  ConcurrentExecutionStatusSchema,
+  generateWorktreePath,
+  generateWorktreeBranch,
+  parseWorktreeConflictFiles,
+  detectFileOverlap,
+  canExecuteConcurrently,
+  evaluateReconciliationOutcome,
+  formatWorktreeCleanupLog,
+} from "./worktree.js";
+export type {
+  WorktreeStatus,
+  WorktreeInfo,
+  WorktreeConflictDetails,
+  WorktreeReconciliationResult,
+  ConcurrentExecutionConfig,
+  ConcurrentExecutionStatus,
+} from "./worktree.js";
+
+export {
+  StreamEventTypeSchema,
+  TaskTransitionEventSchema,
+  AgentLogEventSchema,
+  RoadmapSyncEventSchema,
+  TelemetryStreamEventSchema,
+  ConnectionStreamEventSchema,
+  StreamEventSchema,
+  formatSseEvent,
+  parseSseChunk,
+  encodeWebSocketFrame,
+  decodeWebSocketFrame,
+  createEventFilter,
+} from "./streaming-bus.js";
+export type {
+  StreamEventType,
+  TaskTransitionEvent,
+  AgentLogEvent,
+  RoadmapSyncEvent,
+  TelemetryStreamEvent,
+  ConnectionStreamEvent,
+  StreamEvent,
+} from "./streaming-bus.js";
+
+export {
+  DEFAULT_AGENT_RATES,
+  KNOWN_FAILURE_MODES,
+  extractTokenUsage,
+  calculateTokenCost,
+  calculateBudgetCap,
+  computeTaskTelemetry,
+  recordAttemptTelemetry,
+  computeActiveAttempt,
+  aggregateBuildMetrics,
+  ValueError,
+} from "./telemetry.js";
+export type {
+  AgentRate,
+  KnownFailureMode,
+  AttemptTelemetryInput,
+  TaskTelemetryInput,
+} from "./telemetry.js";
+
+

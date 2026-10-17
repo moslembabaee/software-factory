@@ -321,6 +321,7 @@ def process_issues():
             assigned_agent = assignee if assignee in ("claude", "codex", "antigravity") else "claude"
 
             if matching_tasks:
+                run_cmd(f'gh issue edit {num} --repo {REPO} --remove-label "blocked"')
                 # Reconcile existing task
                 for t in matching_tasks:
                     changed = False
@@ -337,10 +338,11 @@ def process_issues():
                         t.pop("unlinked", None)
                         t.pop("unlinked_from_issue", None)
                         changed = True
-                    if t.get("status") == "paused":
+                    if t.get("status") in ("waiting_approval", "pending_approval", "pending", "failed", "escalated", "paused"):
                         t["status"] = "approved"
-                        t.pop("paused_at", None)
-                        t.pop("pause_reason", None)
+                        t["retry_count"] = 0
+                        for k in ("paused_at", "pause_reason", "backoff_until", "closed_at"):
+                            t.pop(k, None)
                         changed = True
                     if changed:
                         record = {

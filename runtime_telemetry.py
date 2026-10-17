@@ -12,8 +12,15 @@ from datetime import datetime, timezone
 
 AGENT_RATES = {
     "claude": {"prompt": 3.00, "completion": 15.00},
+    "claude-sonnet": {"prompt": 3.00, "completion": 15.00},
+    "claude-opus": {"prompt": 15.00, "completion": 75.00},
+    "claude-haiku": {"prompt": 0.80, "completion": 4.00},
+    "sonnet": {"prompt": 3.00, "completion": 15.00},
+    "opus": {"prompt": 15.00, "completion": 75.00},
+    "haiku": {"prompt": 0.80, "completion": 4.00},
     "codex": {"prompt": 2.50, "completion": 10.00},
     "antigravity": {"prompt": 0.15, "completion": 0.60},
+    "gemini": {"prompt": 0.15, "completion": 0.60},
 }
 FAILURES = ("quota", "agent", "verification", "budget_exceeded", "timeout", "runtime")
 _UNSET = object()
@@ -37,12 +44,26 @@ def token_usage(prompt: str, output: str) -> tuple[dict, bool]:
             continue
         p = value.get("input_tokens", value.get("prompt_tokens"))
         c = value.get("output_tokens", value.get("completion_tokens"))
-        if (type(p) is int and p >= 0 and type(c) is int and c >= 0):
+        if type(p) is int and p >= 0 and type(c) is int and c >= 0:
             candidates.append((p, c))
+        elif "usage" in value and isinstance(value["usage"], dict):
+            u = value["usage"]
+            up = u.get("input_tokens", u.get("prompt_tokens"))
+            uc = u.get("output_tokens", u.get("completion_tokens"))
+            if type(up) is int and up >= 0 and type(uc) is int and uc >= 0:
+                candidates.append((up, uc))
     if candidates:
         p, c = candidates[-1]
         return {"prompt": p, "completion": c, "total": p + c}, False
     match = re.search(r"(?i)tokens?:\s*(\d+)\s*(?:prompt|input)[,\s]+(\d+)\s*(?:completion|output)", output)
+    if match:
+        p, c = map(int, match.groups())
+        return {"prompt": p, "completion": c, "total": p + c}, False
+    match = re.search(r"(?i)tokens?:\s*(\d+)\s*(?:completion|output)[,\s]+(\d+)\s*(?:prompt|input)", output)
+    if match:
+        c, p = map(int, match.groups())
+        return {"prompt": p, "completion": c, "total": p + c}, False
+    match = re.search(r"(?i)(?:input|prompt)[_\s]tokens?:\s*(\d+)[,\s]+(?:output|completion)[_\s]tokens?:\s*(\d+)", output)
     if match:
         p, c = map(int, match.groups())
         return {"prompt": p, "completion": c, "total": p + c}, False
@@ -131,7 +152,7 @@ def build_metrics(tasks: list[dict]) -> dict:
     failures = {}
     agents = {}
     for task in tasks:
-        telemetry = task["telemetry"]
+        telemetry = task.get("telemetry") or task_telemetry(task)
         total_tokens += telemetry["tokens"]["total"]
         total_cost += telemetry["cost_usd"]
         total_duration += telemetry["duration_seconds"]
@@ -142,7 +163,8 @@ def build_metrics(tasks: list[dict]) -> dict:
         caps.append(cap)
         exceeded |= telemetry["budget"]["exceeded"]
         for mode, count in telemetry["failure_modes"].items():
-            failures[mode] = failures.get(mode, 0) + count
+            if mode in FAILURES:
+                failures[mode] = failures.get(mode, 0) + count
         for index, attempt in enumerate(task.get("attempts", [])):
             agent = attempt["agent"]
             row = agents.setdefault(agent, {"agent": agent, "attempt_count": 0, "failed_attempts": 0,
@@ -167,3 +189,21 @@ def build_metrics(tasks: list[dict]) -> dict:
         "failure_modes": failures, "agents": sorted(agents.values(), key=lambda row: row["agent"]),
         "budget": {"total_cap_usd": sum(caps) if caps and all(cap is not None for cap in caps) else None,
                    "total_spent_usd": round(total_cost, 6), "exceeded": exceeded}}
+
+
+def enforce_budget(task: dict, proposed_cost: float = 0.0, default_cap=_UNSET) -> dict:
+    telemetry = task_telemetry(task, default_cap)
+    budget = telemetry["budget"]
+    cap = budget["cap_usd"]
+    spent = budget["spent_usd"]
+    projected = round(spent + max(0.0, nonnegative(proposed_cost)), 6)
+    exceeded = cap is not None and projected >= cap
+    allowed = not exceeded
+    return {
+        "allowed": allowed,
+        "cap_usd": cap,
+        "spent_usd": spent,
+        "projected_usd": projected,
+        "exceeded": exceeded,
+        "reason": "Budget limit exceeded" if exceeded else None,
+    }

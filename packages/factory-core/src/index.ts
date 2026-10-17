@@ -26,12 +26,30 @@ export type { Actor, ActorKind } from "./primitives/actor.js";
 export {
   DiagnosticCategorySchema,
   FailureDiagnosticSchema,
+  CorrelationTypeSchema,
+  CorrelationConfidenceSchema,
+  CorrelatedLocationSchema,
+  FailureDiffCorrelationSchema,
   FailureAnalysisSchema,
+  RemediationContextSchema,
+  LocalizedRemediationTaskSchema,
+  extractDiffMetadata,
+  correlateFailureWithDiff,
+  generateRemediationTaskId,
+  synthesizeRemediationTask,
 } from "./failure-analysis.js";
 export type {
   DiagnosticCategory,
   FailureDiagnostic,
+  CorrelationType,
+  CorrelationConfidence,
+  CorrelatedLocation,
+  FailureDiffCorrelation,
   FailureAnalysis,
+  RemediationContext,
+  LocalizedRemediationTask,
+  DiffHunk,
+  DiffMetadata,
 } from "./failure-analysis.js";
 export {
   ExecutionSchema,
@@ -81,7 +99,9 @@ export {
   BuildBudgetUpdateSchema,
   TaskTokensSchema,
   TaskBudgetSchema,
+  FailureModesSchema,
   TaskTelemetrySchema,
+  AgentMetricsSchema,
   BuildMetricsBudgetSchema,
   BuildMetricsSchema,
   canApproveTask,
@@ -93,10 +113,29 @@ export type {
   BuildBudgetUpdate,
   TaskTokens,
   TaskBudget,
+  FailureModes,
   TaskTelemetry,
+  AgentMetrics,
   BuildMetrics,
   BuildMetricsBudget,
 } from "./build.js";
+export {
+  DEFAULT_AGENT_RATES,
+  FAILURE_MODES,
+  nonnegative,
+  parseTokenUsage,
+  calculateTokenCost,
+  validateBudgetCap,
+  computeTaskTelemetry,
+  recordAttemptTelemetry,
+  computeActiveAttempt,
+  computeBuildMetrics,
+  enforceBudget,
+} from "./telemetry.js";
+export type {
+  FailureMode,
+  TaskTelemetryInput,
+} from "./telemetry.js";
 export {
   PullRequestStatusSchema,
   MergeStateStatusSchema,

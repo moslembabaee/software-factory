@@ -14,7 +14,7 @@ import signal
 from typing import Callable, Literal
 
 from command_runner import run_cmd
-from failure_analysis import analyze_failure
+from failure_analysis import analyze_failure, get_recent_diff_files
 import roadmap_store
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -29,6 +29,7 @@ class VerificationResult:
     log_tail: str = ""
     note: str = ""
     failure_analysis: dict | None = None
+    stderr: str = ""
 
 
 def missing_command(task: dict) -> bool:

@@ -124,6 +124,49 @@ export const BuildBudgetUpdateSchema = z.strictObject({
   budget_cap_usd: z.number().nonnegative().nullable(),
 });
 
+export const StreamingEventTypeSchema = z.enum([
+  "task_transition",
+  "console_log",
+  "roadmap_sync",
+  "telemetry",
+  "snapshot",
+  "connected",
+  "ping",
+]);
+
+export const TaskTransitionEventDataSchema = z.strictObject({
+  task_id: z.string(),
+  status: z.string(),
+  previous_status: z.string().nullable().optional(),
+  commit_sha: z.string().nullable().optional(),
+  pr_ref: z.string().nullable().optional(),
+  github_issue_number: z.number().int().positive().nullable().optional(),
+  timestamp: z.string(),
+});
+
+export const ConsoleLogEventDataSchema = z.strictObject({
+  id: z.string().optional(),
+  task_id: z.string().nullable().optional(),
+  source: z.string(),
+  message: z.string(),
+  timestamp: z.string(),
+});
+
+export const RoadmapSyncEventDataSchema = z.strictObject({
+  action: z.string(),
+  task_id: z.string().nullable().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+  timestamp: z.string(),
+});
+
+export const StreamingEventSchema = z.strictObject({
+  id: z.string(),
+  type: StreamingEventTypeSchema,
+  timestamp: z.string(),
+  task_id: z.string().nullable().optional(),
+  data: z.record(z.string(), z.unknown()),
+});
+
 export type BuildTask = z.infer<typeof BuildTaskSchema>;
 export type BuildLog = z.infer<typeof BuildLogSchema>;
 export type BuildSnapshot = z.infer<typeof BuildSnapshotSchema>;
@@ -133,6 +176,11 @@ export type TaskTelemetry = z.infer<typeof TaskTelemetrySchema>;
 export type BuildMetrics = z.infer<typeof BuildMetricsSchema>;
 export type BuildMetricsBudget = z.infer<typeof BuildMetricsBudgetSchema>;
 export type BuildBudgetUpdate = z.infer<typeof BuildBudgetUpdateSchema>;
+export type StreamingEventType = z.infer<typeof StreamingEventTypeSchema>;
+export type TaskTransitionEventData = z.infer<typeof TaskTransitionEventDataSchema>;
+export type ConsoleLogEventData = z.infer<typeof ConsoleLogEventDataSchema>;
+export type RoadmapSyncEventData = z.infer<typeof RoadmapSyncEventDataSchema>;
+export type StreamingEvent = z.infer<typeof StreamingEventSchema>;
 
 export function canApproveTask(task: BuildTask): boolean {
   return (

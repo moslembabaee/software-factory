@@ -10,9 +10,11 @@ Never feed it untrusted tenant input.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 DiagnosticCategory = Literal[
     "test_failure",
@@ -24,6 +26,37 @@ DiagnosticCategory = Literal[
     "timeout",
     "unknown",
 ]
+
+ConfidenceLevel = Literal["high", "medium", "low"]
+DiffFileStatus = Literal["modified", "added", "deleted", "untracked", "unknown"]
+
+
+@dataclass
+class CorrelatedFile:
+    """A file in recent diff correlated with failure diagnostics."""
+    file: str
+    status: DiffFileStatus = "modified"
+    implicated: bool = True
+    error_types: list[str] = field(default_factory=list)
+    error_lines: list[int] = field(default_factory=list)
+    confidence: ConfidenceLevel = "medium"
+    relevance: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class DiffFileInfo:
+    """Information about a changed file in the recent diff."""
+    path: str
+    status: DiffFileStatus = "modified"
+    added_lines: list[int] = field(default_factory=list)
+    modified_lines: list[int] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
 
 SECRET_PATTERNS = re.compile(
     r"(?i)\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|bearer\s+[a-zA-Z0-9._-]{20,}|(?:-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----))",
@@ -79,11 +112,17 @@ class FailureAnalysis:
     raw_tail: str = ""
     summary: str = ""
     remediation_hint: str = ""
+    stderr: str = ""
+    correlated_files: list[dict] = field(default_factory=list)
+    diff_summary: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["parsed_diagnostics"] = [
             d if isinstance(d, dict) else asdict(d) for d in self.parsed_diagnostics
+        ]
+        data["correlated_files"] = [
+            c if isinstance(c, dict) else asdict(c) for c in self.correlated_files
         ]
         return data
 
@@ -102,6 +141,12 @@ class FailureAnalysis:
                     column=d.get("column"),
                     symbol=d.get("symbol"),
                 ))
+        correlated = []
+        for c in data.get("correlated_files", []):
+            if isinstance(c, CorrelatedFile):
+                correlated.append(c.to_dict())
+            elif isinstance(c, dict):
+                correlated.append(c)
         return cls(
             exit_code=data.get("exit_code", 1),
             command=data.get("command"),
@@ -117,6 +162,9 @@ class FailureAnalysis:
             raw_tail=str(data.get("raw_tail", "")),
             summary=str(data.get("summary", "")),
             remediation_hint=str(data.get("remediation_hint", "")),
+            stderr=str(data.get("stderr", "")),
+            correlated_files=correlated,
+            diff_summary=str(data.get("diff_summary", "")),
         )
 
     def to_prompt_section(self, max_length: int = 4000) -> str:
@@ -125,6 +173,13 @@ class FailureAnalysis:
         if self.command:
             parts.append(f"Command: `{self.command}`")
         parts.append(f"Summary: {self.summary}")
+
+        if self.correlated_files:
+            parts.append("\n### Correlated Files (Diff & Root Cause):")
+            for c in self.correlated_files[:8]:
+                cf = c if isinstance(c, dict) else asdict(c)
+                rel = f" - {cf.get('relevance')}" if cf.get("relevance") else ""
+                parts.append(f"- `{cf.get('file')}` [{cf.get('confidence', 'medium')} confidence]{rel}")
 
         if self.failing_tests:
             parts.append("\n### Failing Tests:")
@@ -160,7 +215,7 @@ class FailureAnalysis:
             for l in self.lint_errors[:5]:
                 parts.append(f"- {l}")
 
-        if self.implicated_files:
+        if self.implicated_files and not self.correlated_files:
             parts.append("\n### Implicated Files to Inspect:")
             for f in self.implicated_files[:12]:
                 parts.append(f"- `{f}`")
@@ -171,6 +226,12 @@ class FailureAnalysis:
                 lines = st.splitlines()[:10]
                 parts.append("```\n" + "\n".join(lines) + "\n```")
 
+        if self.stderr:
+            parts.append(f"\n### Stderr Diagnostic Output:\n```\n{self.stderr[:1000]}\n```")
+
+        if self.diff_summary:
+            parts.append(f"\n### Recent File Diff Summary:\n{self.diff_summary}")
+
         if self.remediation_hint:
             parts.append(f"\n### Remediation Suggestion:\n{self.remediation_hint}")
 
@@ -180,16 +241,346 @@ class FailureAnalysis:
         return result
 
 
+def parse_git_diff(diff_output: str) -> list[DiffFileInfo]:
+    """Parse unified git diff output into structured DiffFileInfo records."""
+    result: list[DiffFileInfo] = []
+    current_file: DiffFileInfo | None = None
+
+    for line in diff_output.splitlines():
+        if line.startswith("diff --git"):
+            if current_file:
+                result.append(current_file)
+            parts = line.split(" ")
+            b_path = parts[-1].lstrip("b/").strip() if len(parts) >= 4 else ""
+            current_file = DiffFileInfo(path=b_path, status="modified")
+        elif current_file and line.startswith("new file mode"):
+            current_file.status = "added"
+        elif current_file and line.startswith("deleted file mode"):
+            current_file.status = "deleted"
+        elif current_file and line.startswith("+++ "):
+            path = line[4:].strip().lstrip("b/")
+            if path != "/dev/null" and path:
+                current_file.path = path
+            elif path == "/dev/null":
+                current_file.status = "deleted"
+        elif current_file and line.startswith("--- "):
+            path = line[4:].strip().lstrip("a/")
+            if path == "/dev/null":
+                current_file.status = "added"
+        elif current_file and line.startswith("@@"):
+            hunk_match = re.search(r"@@\s*-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s*@@", line)
+            if hunk_match:
+                new_start = int(hunk_match.group(1))
+                new_count = int(hunk_match.group(2)) if hunk_match.group(2) is not None else 1
+                if new_count > 0:
+                    lines_range = list(range(new_start, new_start + new_count))
+                    if current_file.status == "added":
+                        current_file.added_lines.extend(lines_range)
+                    else:
+                        current_file.modified_lines.extend(lines_range)
+    if current_file:
+        result.append(current_file)
+    return result
+
+
+def get_recent_diff_files(project_root: Path | str, runner: Callable = None) -> list[DiffFileInfo]:
+    """Inspect git diff and git status to collect recently modified and untracked files."""
+    from command_runner import run_cmd
+    run = runner or run_cmd
+    root = Path(project_root).resolve()
+    diff_files: list[DiffFileInfo] = []
+    try:
+        code, out = run(["git", "diff", "HEAD", "-U0"], 30, root)
+        if code == 0 and out.strip():
+            diff_files.extend(parse_git_diff(out))
+    except Exception:
+        pass
+
+    try:
+        code, out = run(["git", "status", "--porcelain"], 30, root)
+        if code == 0 and out.strip():
+            existing = {d.path for d in diff_files}
+            for raw_line in out.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("??"):
+                    p = line[2:].strip()
+                    if p and p not in existing:
+                        diff_files.append(DiffFileInfo(path=p, status="untracked"))
+                        existing.add(p)
+                elif line.startswith(("M", "A", "D")) or (len(line) > 1 and line[1] in ("M", "A", "D")):
+                    p = line[2:].strip()
+                    if " -> " in p:
+                        p = p.split(" -> ")[1].strip()
+                    if p and p not in existing:
+                        status: DiffFileStatus = "deleted" if "D" in line[:2] else "added" if "A" in line[:2] else "modified"
+                        diff_files.append(DiffFileInfo(path=p, status=status))
+                        existing.add(p)
+    except Exception:
+        pass
+    return diff_files
+
+
+def generate_diff_summary(diff_files: list[DiffFileInfo | dict | str]) -> str:
+    """Generate a compact human-readable summary of changed files."""
+    if not diff_files:
+        return "No recent changes detected in working tree"
+    parts = []
+    for d in diff_files[:10]:
+        if isinstance(d, str):
+            parts.append(f"- MODIFIED `{d}`")
+        elif isinstance(d, dict):
+            status = d.get("status", "modified").upper()
+            path = d.get("path") or d.get("file", "")
+            lines = d.get("modified_lines") or d.get("added_lines") or []
+            lines_str = f" (lines: {lines[:5]})" if lines else ""
+            parts.append(f"- {status} `{path}`{lines_str}")
+        elif isinstance(d, DiffFileInfo):
+            status = d.status.upper()
+            lines = d.modified_lines or d.added_lines or []
+            lines_str = f" (lines: {lines[:5]})" if lines else ""
+            parts.append(f"- {status} `{d.path}`{lines_str}")
+    if len(diff_files) > 10:
+        parts.append(f"- ... (+{len(diff_files) - 10} more)")
+    return "\n".join(parts)
+
+
+def correlate_failure_with_diff(
+    analysis: FailureAnalysis,
+    diff_files: list[str | dict | DiffFileInfo],
+) -> list[CorrelatedFile]:
+    """Correlate parsed failure diagnostics with recently modified files from git diff."""
+    normalized: list[DiffFileInfo] = []
+    for item in diff_files:
+        if isinstance(item, str):
+            normalized.append(DiffFileInfo(path=item.strip(), status="modified"))
+        elif isinstance(item, dict):
+            normalized.append(DiffFileInfo(
+                path=item.get("path") or item.get("file", ""),
+                status=item.get("status", "modified"),
+                added_lines=list(item.get("added_lines", [])),
+                modified_lines=list(item.get("modified_lines", [])),
+            ))
+        elif isinstance(item, DiffFileInfo):
+            normalized.append(item)
+
+    correlated: list[CorrelatedFile] = []
+    diff_paths = {d.path for d in normalized}
+
+    for diff_item in normalized:
+        file_path = diff_item.path
+        if not file_path:
+            continue
+        error_types: list[str] = []
+        error_lines: list[int] = []
+        confidence: ConfidenceLevel = "low"
+        relevance = "Modified in recent diff"
+        is_implicated = False
+
+        # 1. Parsed diagnostics (type errors, compiler errors, etc.)
+        for diag in analysis.parsed_diagnostics:
+            if diag.file and (diag.file == file_path or file_path.endswith(diag.file) or diag.file.endswith(file_path)):
+                is_implicated = True
+                if diag.category not in error_types:
+                    error_types.append(diag.category)
+                if diag.line is not None:
+                    if diag.line not in error_lines:
+                        error_lines.append(diag.line)
+                    is_line_in_diff = (
+                        diag.line in diff_item.added_lines or
+                        diag.line in diff_item.modified_lines
+                    )
+                    if is_line_in_diff:
+                        confidence = "high"
+                        relevance = f"Direct line match: {diag.category} at line {diag.line}"
+                    elif confidence != "high":
+                        confidence = "high"
+                        relevance = f"Direct file match: {diag.category} at line {diag.line}"
+                elif confidence != "high":
+                    confidence = "high"
+                    relevance = f"File referenced in {diag.category}: {diag.message[:80]}"
+
+        # 2. Stack traces
+        for trace in analysis.stack_traces:
+            if file_path in trace:
+                is_implicated = True
+                if "stack_trace" not in error_types:
+                    error_types.append("stack_trace")
+                if confidence != "high":
+                    confidence = "high"
+                    relevance = "File referenced in stack trace frame"
+
+        # 3. Failing tests
+        for test_name in analysis.failing_tests:
+            if file_path in test_name:
+                is_implicated = True
+                if "test_failure" not in error_types:
+                    error_types.append("test_failure")
+                confidence = "high"
+                relevance = f"Direct failing test: {test_name[:80]}"
+            else:
+                base = re.sub(r"\.(?:tsx?|jsx?|mjs|cjs|py)$", "", file_path)
+                if base and base in test_name:
+                    is_implicated = True
+                    if "test_failure" not in error_types:
+                        error_types.append("test_failure")
+                    if confidence != "high":
+                        confidence = "medium"
+                        relevance = f"Target of failing test: {test_name[:80]}"
+
+        # 4. Implicated files list
+        if not is_implicated:
+            for f in analysis.implicated_files:
+                if f == file_path or file_path.endswith(f) or f.endswith(file_path):
+                    is_implicated = True
+                    error_types.append("implicated_file")
+                    if confidence == "low":
+                        confidence = "medium"
+                        relevance = "Referenced in failure diagnostics"
+                    break
+
+        if is_implicated or file_path in diff_paths:
+            correlated.append(CorrelatedFile(
+                file=file_path,
+                status=diff_item.status,
+                implicated=is_implicated,
+                error_types=error_types,
+                error_lines=error_lines,
+                confidence=confidence,
+                relevance=relevance,
+            ))
+
+    rank = {"high": 3, "medium": 2, "low": 1}
+    correlated.sort(key=lambda c: (rank.get(c.confidence, 0), len(c.error_lines)), reverse=True)
+    return correlated
+
+
+def generate_remediation_task_id(parent_task_id: str, existing_ids: list[str]) -> str:
+    """Generate a deterministic remediation task ID avoiding collisions."""
+    base = f"{parent_task_id}-REMEDY"
+    if base not in existing_ids:
+        return base
+    index = 2
+    while f"{base}-{index}" in existing_ids:
+        index += 1
+    return f"{base}-{index}"
+
+
+def synthesize_remediation_task(
+    parent_task: dict,
+    analysis: FailureAnalysis,
+    existing_ids: list[str],
+) -> dict:
+    """Synthesize a localized remediation task dictionary matching LocalizedRemediationTaskSchema."""
+    remedy_id = generate_remediation_task_id(parent_task["id"], existing_ids)
+    correlated = analysis.correlated_files or []
+    top_correlated = [
+        c for c in correlated
+        if (c.get("confidence") if isinstance(c, dict) else c.confidence) in ("high", "medium")
+    ]
+
+    if top_correlated:
+        implicated_file_names = [
+            c.get("file") if isinstance(c, dict) else c.file for c in top_correlated
+        ]
+    else:
+        implicated_file_names = analysis.implicated_files[:6]
+
+    verification_cmd = parent_task.get("verification_cmd") or "npm run typecheck && npm test"
+
+    lines: list[str] = [
+        "### 🛠️ Autonomous Localized Remediation Task",
+        "",
+        f"Remediate verification failure for parent task `{parent_task['id']}`.",
+        "",
+        f"- **Parent Task:** `{parent_task['id']}` — {parent_task.get('title', '')}",
+        f"- **Exit Code:** `{analysis.exit_code}`",
+        f"- **Verification Command:** `{verification_cmd}`",
+        "",
+        "#### Failure Summary",
+        analysis.summary,
+        "",
+    ]
+
+    if top_correlated:
+        lines.append("#### Correlated Files (Localized Root Cause)")
+        for c in top_correlated:
+            c_dict = c if isinstance(c, dict) else c.to_dict()
+            rel = f": {c_dict['relevance']}" if c_dict.get("relevance") else ""
+            lines.append(f"- `{c_dict['file']}` [{c_dict.get('confidence', 'medium')} confidence]{rel}")
+        lines.append("")
+    elif implicated_file_names:
+        lines.append("#### Implicated Files to Inspect")
+        for f in implicated_file_names:
+            lines.append(f"- `{f}`")
+        lines.append("")
+
+    if analysis.failing_tests:
+        lines.append("#### Failing Tests")
+        lines.extend([f"- `{t}`" for t in analysis.failing_tests[:5]])
+        lines.append("")
+
+    if analysis.type_errors:
+        lines.append("#### TypeScript Type Errors")
+        lines.extend([f"- {e}" for e in analysis.type_errors[:5]])
+        lines.append("")
+
+    if analysis.stack_traces:
+        lines.append("#### Diagnostic Stack Trace")
+        lines.append("```")
+        lines.append(analysis.stack_traces[0][:1500])
+        lines.append("```")
+        lines.append("")
+
+    hint = analysis.remediation_hint or "Inspect the correlated files, reproduce the failure, and make a focused fix."
+    lines.extend([
+        "#### Remediation Instructions",
+        hint,
+        f"Run `{verification_cmd}` before finishing.",
+        "Leave Git commits, pushes, and roadmap lifecycle updates to the orchestrator.",
+        "",
+        f"<!-- factory-remediation-for: {parent_task['id']} -->",
+    ])
+
+    return {
+        "id": remedy_id,
+        "parent_task_id": parent_task["id"],
+        "title": f"Remediation: Fix verification failure in {parent_task['id']}: {analysis.summary}"[:120],
+        "description": "\n".join(lines),
+        "phase": parent_task.get("phase", "Continuous Polish & Evolution"),
+        "status": "approved",
+        "assigned_agent": parent_task.get("assigned_agent", "claude"),
+        "verification_cmd": verification_cmd,
+        "implicated_files": implicated_file_names,
+        "correlated_files": [c if isinstance(c, dict) else c.to_dict() for c in correlated],
+        "is_remediation": True,
+        "tenant_id": parent_task.get("tenant_id"),
+        "project_id": parent_task.get("project_id"),
+        "github_issue_number": parent_task.get("github_issue_number"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 class ReflectionEngine:
     """Automated reflection engine for analyzing failures and synthesizing remediation."""
 
     def __init__(self, max_feedback_chars: int = 4000) -> None:
         self.max_feedback_chars = max_feedback_chars
 
-    def analyze(self, exit_code: int, output: str, command: str | None = None) -> FailureAnalysis:
+    def analyze(
+        self,
+        exit_code: int,
+        output: str,
+        command: str | None = None,
+        stderr: str = "",
+        diff_files: list[str | dict | DiffFileInfo] | None = None,
+        diff_summary: str = "",
+    ) -> FailureAnalysis:
         """Parse verification output and produce a structured FailureAnalysis."""
         # Clean ANSI escape sequences
         clean_output = anonymize_secrets(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output[-64000:]))
+        clean_stderr = anonymize_secrets(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", stderr[-32000:])) if stderr else ""
         tail = clean_output
         lines = tail.splitlines()
 
@@ -421,6 +812,37 @@ class ReflectionEngine:
             is_timeout, failing_tests, type_errors, compile_errors, assertion_errors, runtime_errors, implicated_files
         )
 
+        if not clean_stderr and exit_code != 0:
+            stderr_parts = []
+            if stack_traces:
+                stderr_parts.extend(stack_traces[:2])
+            if type_errors:
+                stderr_parts.extend(type_errors[:3])
+            if compile_errors:
+                stderr_parts.extend(compile_errors[:3])
+            if runtime_errors:
+                stderr_parts.extend(runtime_errors[:3])
+            if stderr_parts:
+                clean_stderr = "\n".join(stderr_parts)[:4000]
+
+        correlated_list: list[dict] = []
+        if diff_files:
+            temp_analysis = FailureAnalysis(
+                exit_code=exit_code,
+                command=command,
+                parsed_diagnostics=diagnostics[:60],
+                failing_tests=failing_tests,
+                type_errors=type_errors,
+                compile_errors=compile_errors,
+                lint_errors=lint_errors,
+                assertion_errors=assertion_errors,
+                runtime_errors=runtime_errors,
+                implicated_files=implicated_files,
+                stack_traces=stack_traces,
+            )
+            correlated_objects = correlate_failure_with_diff(temp_analysis, diff_files)
+            correlated_list = [c.to_dict() for c in correlated_objects]
+
         return FailureAnalysis(
             exit_code=exit_code,
             command=command,
@@ -436,6 +858,9 @@ class ReflectionEngine:
             raw_tail=clean_output[-4000:],
             summary=summary[:1200],
             remediation_hint=remediation_hint,
+            stderr=clean_stderr,
+            correlated_files=correlated_list,
+            diff_summary=diff_summary or (generate_diff_summary(diff_files) if diff_files else ""),
         )
 
     def generate_summary_from_data(
@@ -551,8 +976,17 @@ class ReflectionEngine:
 _default_engine = ReflectionEngine()
 
 
-def analyze_failure(exit_code: int, output: str, command: str | None = None) -> FailureAnalysis:
-    return _default_engine.analyze(exit_code, output, command)
+def analyze_failure(
+    exit_code: int,
+    output: str,
+    command: str | None = None,
+    stderr: str = "",
+    diff_files: list[str | dict | DiffFileInfo] | None = None,
+    diff_summary: str = "",
+) -> FailureAnalysis:
+    return _default_engine.analyze(
+        exit_code, output, command, stderr=stderr, diff_files=diff_files, diff_summary=diff_summary
+    )
 
 
 def synthesize_remediation_prompt(task: dict, analysis: FailureAnalysis, agent: str | None = None) -> str:

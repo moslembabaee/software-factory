@@ -1,15 +1,30 @@
 #!/usr/bin/env python3
 import json
 import os
+import queue
+import select
+import socket
 import subprocess
 import sys
+import time
+import uuid
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import build_events
 import roadmap_sync
 import roadmap_store
+from build_dashboard import (
+    StreamingEvent,
+    StreamingEventBus,
+    decode_ws_frame,
+    encode_ws_frame,
+    format_sse,
+    get_event_bus,
+    make_ws_accept,
+)
 from issue_lifecycle import (
     FACTORY_TASK_LABEL,
     IGNORED_LABELS,
@@ -111,6 +126,10 @@ def handle_issue_closed(issue_num: int, closed_at: str | None = None):
         ):
             log_issue_tasks(issue_num, f"GitHub issue #{issue_num} closed")
             roadmap_sync.sync_roadmap_to_github()
+            get_event_bus(PROJECT_ROOT).publish_roadmap_sync(
+                action="issue_closed",
+                details={"issue_number": issue_num, "closed_at": closed_at},
+            )
             log(f"Synchronized roadmap for closed Issue #{issue_num}")
     except Exception as e:
         log(f"Error synchronizing closed Issue #{issue_num}: {e}")
@@ -130,6 +149,8 @@ def handle_issue_closed(issue_num: int, closed_at: str | None = None):
 
 
 def mark_task_approved(issue_num: int):
+    approved_tasks: list[str] = []
+
     def approve(data):
         modified = False
         for task in data.get("tasks", []):
@@ -141,6 +162,7 @@ def mark_task_approved(issue_num: int):
                 task.pop("backoff_seconds", None)
                 task.pop("paused_at", None)
                 task.pop("pause_reason", None)
+                approved_tasks.append(task.get("id"))
                 modified = True
         return modified
 
@@ -149,6 +171,18 @@ def mark_task_approved(issue_num: int):
             return False
         log_issue_tasks(issue_num, f"GitHub issue #{issue_num} approved")
         roadmap_sync.sync_roadmap_to_github()
+
+        for tid in approved_tasks:
+            get_event_bus(PROJECT_ROOT).publish_task_transition(
+                task_id=tid,
+                status="approved",
+                github_issue_number=issue_num,
+            )
+        get_event_bus(PROJECT_ROOT).publish_roadmap_sync(
+            action="task_approved",
+            details={"issue_number": issue_num, "task_ids": approved_tasks},
+        )
+
         subprocess.run(
             ["gh", "issue", "edit", str(issue_num), "--repo", REPO,
              "--remove-label", "blocked"], capture_output=True, text=True, timeout=30,
@@ -250,6 +284,18 @@ def handle_issue_labeled_factory_task(
         msg = f"Linked GitHub issue #{num} to task {created_task_id}"
         build_events.emit(PROJECT_ROOT, created_task_id, "webhook", msg)
         roadmap_sync.sync_roadmap_to_github()
+
+        get_event_bus(PROJECT_ROOT).publish_task_transition(
+            task_id=created_task_id,
+            status="approved",
+            github_issue_number=num,
+        )
+        get_event_bus(PROJECT_ROOT).publish_roadmap_sync(
+            action="task_created" if is_new else "reconciled_link",
+            task_id=created_task_id,
+            details={"issue_number": num, "phase": phase, "assignee": assignee},
+        )
+
         log(msg)
 
         # Post bidirectional link comment to GitHub issue (stores task id in issue comment)
@@ -300,6 +346,16 @@ def handle_issue_unlabeled_factory_task(
     for tid in affected_tasks:
         msg = f"Issue #{num} unlabeled: unlinked and paused task {tid}"
         build_events.emit(PROJECT_ROOT, tid, "webhook", msg)
+        get_event_bus(PROJECT_ROOT).publish_task_transition(
+            task_id=tid,
+            status="paused",
+            github_issue_number=num,
+        )
+        get_event_bus(PROJECT_ROOT).publish_roadmap_sync(
+            action="task_unlinked_paused",
+            task_id=tid,
+            details={"issue_number": num},
+        )
         log(msg)
 
     roadmap_sync.sync_roadmap_to_github()
@@ -372,6 +428,11 @@ def handle_issue_edited(
     for tid in affected_tasks:
         msg = f"Issue #{num} edited: reconciled task {tid}"
         build_events.emit(PROJECT_ROOT, tid, "webhook", msg)
+        get_event_bus(PROJECT_ROOT).publish_roadmap_sync(
+            action="task_reconciled",
+            task_id=tid,
+            details={"issue_number": num, "phase": phase},
+        )
         log(msg)
 
     roadmap_sync.sync_roadmap_to_github()
@@ -440,6 +501,19 @@ def handle_task_transition(
 
         build_events.emit(PROJECT_ROOT, task_id, "webhook", f"GitHub issue #{num} closed after task {new_status}")
         roadmap_sync.sync_roadmap_to_github()
+
+        get_event_bus(PROJECT_ROOT).publish_task_transition(
+            task_id=task_id,
+            status=new_status,
+            commit_sha=commit_sha,
+            pr_ref=pr_ref,
+            github_issue_number=num,
+        )
+        get_event_bus(PROJECT_ROOT).publish_roadmap_sync(
+            action="task_transition_closed_issue",
+            task_id=task_id,
+            details={"status": new_status, "issue_number": num},
+        )
         return True
 
     return False
@@ -467,6 +541,13 @@ def sync_tasks_to_issues(runner=None) -> int:
 
 
 class GitHubWebhookHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-GitHub-Event, Authorization, Upgrade, Sec-WebSocket-Key, Sec-WebSocket-Version")
+        self.end_headers()
+
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         event_type = self.headers.get("X-GitHub-Event", "unknown")
@@ -479,14 +560,36 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 
         log(f"Received webhook event '{event_type}'")
 
+        if self.path in ("/events/publish", "/api/events/publish", "/api/events"):
+            event_type_name = payload.get("type", "custom")
+            event_data = payload.get("data", payload)
+            tid = payload.get("task_id")
+            evt = get_event_bus(PROJECT_ROOT).publish(event_type_name, event_data, task_id=tid)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "event": evt.to_dict()}).encode("utf-8"))
+            return
+
         if self.path in ("/task/transition", "/tasks/transition"):
             task_id = payload.get("task_id", "")
             status = payload.get("status", "")
             commit_sha = payload.get("commit_sha")
             pr_ref = payload.get("pr_ref") or payload.get("pr_number")
-            success = handle_task_transition(task_id, status, commit_sha=commit_sha, pr_ref=pr_ref)
+            get_event_bus(PROJECT_ROOT).publish_task_transition(
+                task_id=task_id,
+                status=status,
+                commit_sha=commit_sha,
+                pr_ref=pr_ref,
+            )
+            if status in ("done", "completed"):
+                success = handle_task_transition(task_id, status, commit_sha=commit_sha, pr_ref=pr_ref)
+            else:
+                success = bool(task_id and status)
             self.send_response(200 if success else 400)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": success}).encode("utf-8"))
             return
@@ -494,6 +597,7 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
         if event_type == "ping":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(b'{"status":"pong"}')
             return
@@ -504,6 +608,7 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
             log(f"Duplicate webhook event '{dedupe_key}' ignored.")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(b'{"ok":true,"duplicate":true}')
             return
@@ -590,14 +695,174 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
 
     def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if path in ("/events", "/events/stream", "/stream", "/build/stream", "/ws", "/events/ws"):
+            is_ws = (
+                path in ("/ws", "/events/ws") or
+                self.headers.get("Upgrade", "").lower() == "websocket"
+            )
+            if is_ws:
+                self.handle_websocket(params)
+            else:
+                self.handle_sse(params)
+            return
+
+        if path in ("/health", "/ping"):
+            bus = get_event_bus(PROJECT_ROOT)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            payload = {
+                "status": "ok",
+                "subscribers": bus.subscriber_count,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            self.wfile.write(json.dumps(payload).encode("utf-8"))
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(b"Software Factory GitHub Webhook Listener is active\n")
+
+    def handle_sse(self, params: dict):
+        task_id = params.get("task_id", [None])[0]
+        types_str = params.get("type", [None])[0]
+        event_types = set(types_str.split(",")) if types_str else None
+        task_ids = {task_id} if task_id else None
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
+
+        bus = get_event_bus(PROJECT_ROOT)
+        q = bus.subscribe(task_ids=task_ids, event_types=event_types)
+
+        connected = StreamingEvent(
+            type="connected",
+            data={
+                "status": "connected",
+                "server": "software-factory-event-bus",
+                "stream": "sse",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        try:
+            self.wfile.write(connected.to_sse().encode("utf-8"))
+            self.wfile.flush()
+        except Exception:
+            bus.unsubscribe(q)
+            return
+
+        try:
+            while not getattr(self.server, "_shutdown_requested", False):
+                try:
+                    event = q.get(timeout=2.0)
+                    self.wfile.write(event.to_sse().encode("utf-8"))
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            bus.unsubscribe(q)
+
+    def handle_websocket(self, params: dict):
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"Missing Sec-WebSocket-Key\n")
+            return
+
+        accept_key = make_ws_accept(key)
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept_key)
+        self.end_headers()
+        self.wfile.flush()
+
+        sock = self.connection
+        sock.settimeout(0.5)
+
+        task_id = params.get("task_id", [None])[0]
+        types_str = params.get("type", [None])[0]
+        event_types = set(types_str.split(",")) if types_str else None
+        task_ids = {task_id} if task_id else None
+
+        bus = get_event_bus(PROJECT_ROOT)
+        q = bus.subscribe(task_ids=task_ids, event_types=event_types)
+
+        init_payload = json.dumps({
+            "id": str(uuid.uuid4()),
+            "type": "connected",
+            "status": "connected",
+            "server": "software-factory-event-bus",
+            "stream": "websocket",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        try:
+            sock.sendall(encode_ws_frame(init_payload, opcode=0x01))
+        except Exception:
+            bus.unsubscribe(q)
+            return
+
+        try:
+            last_ping = time.time()
+            recv_buffer = bytearray()
+            while not getattr(self.server, "_shutdown_requested", False):
+                # Non-blocking check for incoming client frames
+                readable, _, _ = select.select([sock], [], [], 0.05)
+                if sock in readable:
+                    try:
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        recv_buffer.extend(chunk)
+                        while True:
+                            opcode, payload, rem = decode_ws_frame(bytes(recv_buffer))
+                            if opcode is None:
+                                break
+                            recv_buffer = bytearray(rem)
+                            if opcode == 0x08:  # Close
+                                sock.sendall(encode_ws_frame(b"", opcode=0x08))
+                                return
+                            elif opcode == 0x09:  # Ping
+                                sock.sendall(encode_ws_frame(payload or b"", opcode=0x0A))
+                    except (socket.timeout, BlockingIOError, OSError):
+                        pass
+
+                try:
+                    event = q.get(timeout=0.1)
+                    sock.sendall(event.to_ws_frame())
+                except queue.Empty:
+                    pass
+
+                if time.time() - last_ping > 15.0:
+                    sock.sendall(encode_ws_frame(b"ping", opcode=0x09))
+                    last_ping = time.time()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            bus.unsubscribe(q)
 
     def log_message(self, format, *args):
         pass
@@ -606,13 +871,16 @@ class GitHubWebhookHandler(BaseHTTPRequestHandler):
 def run():
     port = 9097
     server_address = ("127.0.0.1", port)
-    httpd = HTTPServer(server_address, GitHubWebhookHandler)
-    log(f"🚀 GitHub Webhook Listener running on 127.0.0.1:{port}")
+    bus = get_event_bus(PROJECT_ROOT)
+    bus.start_file_watcher(PROJECT_ROOT)
+    httpd = ThreadingHTTPServer(server_address, GitHubWebhookHandler)
+    log(f"🚀 GitHub Webhook Listener running on 127.0.0.1:{port} with real-time SSE/WebSocket event streaming")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     httpd.server_close()
+    bus.stop_file_watcher()
     log("Webhook Listener stopped.")
 
 

@@ -84,6 +84,11 @@ export {
   TaskTelemetrySchema,
   BuildMetricsBudgetSchema,
   BuildMetricsSchema,
+  StreamingEventTypeSchema,
+  TaskTransitionEventDataSchema,
+  ConsoleLogEventDataSchema,
+  RoadmapSyncEventDataSchema,
+  StreamingEventSchema,
   canApproveTask,
 } from "./build.js";
 export type {
@@ -91,6 +96,11 @@ export type {
   BuildLog,
   BuildSnapshot,
   BuildBudgetUpdate,
+  StreamingEventType,
+  TaskTransitionEventData,
+  ConsoleLogEventData,
+  RoadmapSyncEventData,
+  StreamingEvent,
   TaskTokens,
   TaskBudget,
   TaskTelemetry,

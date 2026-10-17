@@ -26,6 +26,7 @@ import roadmap_store
 import pr_lifecycle
 import roadmap_sync
 import verify_task
+import workspace
 from command_runner import OUTPUT_LIMIT, run_cmd
 from issue_lifecycle import (
     IGNORED_LABELS, issue_number_for_task, label_names, mark_issue_closed,
@@ -369,6 +370,7 @@ class AgentRuntime:
                 if code or (command[1] == "rev-parse" and output.strip() != task["source_commit_sha"]):
                     self.finish(task_id, "failed", last_error=f"CI repair checkout differs from failing head: {output}")
                     return "failed"
+        checkpoint = workspace.create_checkpoint(self.config.project_root, task_id=task_id)
         feedback = None
         for agent in agent_order(task.get("assigned_agent", "claude")):
             blocked = False
@@ -486,6 +488,13 @@ class AgentRuntime:
             log(self.config, f"{task_id} telemetry: {tokens['total']} tokens (${cost:.6f} estimated cost), "
                 f"latency {agent_duration + verify_duration:.2f}s", task_id)
             if budget_reached:
+                workspace.rollback_workspace(
+                    self.config.project_root,
+                    checkpoint=checkpoint,
+                    clean_untracked=True,
+                    restore_roadmap=False,
+                    reason="unrecoverable_failure",
+                )
                 self.finish(task_id, "failed", last_error="Budget limit reached; further execution refused")
                 return "failed"
             if verification_outcome and verification_outcome not in {"verified", "failed"}:
@@ -503,6 +512,13 @@ class AgentRuntime:
                     current.pop("failure_summary", None)), ("verified",)):
                 return "cancelled"
             return self.publish_verified(task)
+        workspace.rollback_workspace(
+            self.config.project_root,
+            checkpoint=checkpoint,
+            clean_untracked=True,
+            restore_roadmap=False,
+            reason="verification_failure_limit",
+        )
         self.finish(task_id, "failed")
         return "failed"
 
@@ -516,6 +532,9 @@ class AgentRuntime:
                 return "busy"
             if (self.config.project_root / "STOP_IMPROVEMENTS").exists():
                 return "stopped"
+            corrupt, _ = workspace.detect_roadmap_corruption(self.config.roadmap_file)
+            if corrupt:
+                workspace.reconcile_workspace_drift(self.config.project_root)
             data = self.load()
             current = data.get("current_task_id")
             repairing = {t["parent_task_id"] for t in data["tasks"] if t.get("is_bugfix")

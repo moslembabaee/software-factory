@@ -4,9 +4,23 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
+
+_listeners: list[Callable[[dict], None]] = []
 
 
-def emit(root: Path, task_id: str, source: str, message: str):
+def register_listener(callback: Callable[[dict], None]) -> Callable[[], None]:
+    """Register an in-process callback invoked on every emitted event."""
+    _listeners.append(callback)
+
+    def unsubscribe():
+        if callback in _listeners:
+            _listeners.remove(callback)
+
+    return unsubscribe
+
+
+def emit(root: Path, task_id: str, source: str, message: str) -> dict:
     directory = root / "logs"
     directory.mkdir(exist_ok=True)
     record = {"id": str(uuid.uuid4()), "task_id": task_id, "source": source,
@@ -14,6 +28,12 @@ def emit(root: Path, task_id: str, source: str, message: str):
     with (directory / "build.jsonl").open("a", encoding="utf-8") as output:
         fcntl.flock(output, fcntl.LOCK_EX)
         output.write(json.dumps(record) + "\n")
+    for listener in list(_listeners):
+        try:
+            listener(record)
+        except Exception:
+            pass
+    return record
 
 
 def tail(root: Path, task_ids: set[str]) -> list[dict]:

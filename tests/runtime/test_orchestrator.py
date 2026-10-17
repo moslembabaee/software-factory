@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import orchestrator as runtime
 import roadmap_store
+import workspace
 from github_fixture import GitHubStub
 
 
@@ -695,6 +696,32 @@ class RuntimeTests(unittest.TestCase):
         agent.assert_not_called()
         self.assertEqual(len(self.data()["tasks"][1]["verifications"]), 1)
         self.assertEqual(len([c for c in self.github.calls if c[:3] == ["gh", "pr", "create"]]), 1)
+
+    def test_failed_task_rolls_back_uncommitted_workspace_changes(self):
+        self.git("add", "implementation.txt")
+        self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "track implementation")
+        initial_content = (self.repo / "implementation.txt").read_text()
+        untracked_file = self.repo / "bad_scratch.ts"
+
+        def agent_failing(*_args):
+            (self.repo / "implementation.txt").write_text("broken changes")
+            untracked_file.write_text("console.log('untracked dirty file');")
+            return 1, "agent execution failed"
+
+        with patch.object(runtime, "execute_agent_task", side_effect=agent_failing):
+            self.assertEqual(self.worker.run_once(), "failed")
+
+        self.assertEqual((self.repo / "implementation.txt").read_text(), initial_content)
+        self.assertFalse(untracked_file.exists())
+        self.assertEqual(self.latest()["status"], "failed")
+
+    def test_corrupted_roadmap_is_reconciled_cleanly_on_run_once(self):
+        self.config.roadmap_file.write_text("{ corrupt json: [")
+        with patch.object(runtime, "execute_agent_task", return_value=(0, "done")):
+            outcome = self.worker.run_once()
+        self.assertIn(outcome, ("idle", "completed", "failed"))
+        data = self.data()
+        self.assertIsInstance(data.get("tasks"), list)
 
 
 class TransportTests(unittest.TestCase):

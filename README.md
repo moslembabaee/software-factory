@@ -1,8 +1,15 @@
-# Software Factory full-build pack v6.3
+# Software Factory full-build pack v6.5
 
+[![Live Dashboard](https://img.shields.io/badge/AgentOS_Live-agentos.141.11.32.213.nip.io-blue?style=for-the-badge&logo=fastify)](https://agentos.141.11.32.213.nip.io)
+[![Pro Orchestrator Kits](https://img.shields.io/badge/Production_Kits-Wealth_OS_Store-emerald?style=for-the-badge&logo=shield)](https://wealth.141.11.32.213.nip.io/store)
+[![Telegram Bot Store](https://img.shields.io/badge/Telegram_Bot-@Zac__babaee__bot-blue?style=for-the-badge&logo=telegram)](https://t.me/Zac_babaee_bot)
 [![CI](https://github.com/moslembabaee/software-factory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moslembabaee/software-factory/actions/workflows/ci.yml)
 
-This is a specification pack, not implemented software. v6.3 preserves all v6.2 files and adds binding consumer-experience requirements 49–53, covering simple-mode workflow, verified previews, visual feedback, cost, recovery, delivery and test gates. See docs/00_START_HERE.md.
+> 🌐 **Live AgentOS Control Plane:** [agentos.141.11.32.213.nip.io](https://agentos.141.11.32.213.nip.io)  
+> 🛍 **Automated Software Factory Blueprint & Orchestrator Kit:** [wealth.141.11.32.213.nip.io/store](https://wealth.141.11.32.213.nip.io/store)  
+> 🤖 **Telegram In-App Kit Store:** [@Zac_babaee_bot](https://t.me/Zac_babaee_bot)
+
+This is the specification and production runtime pack for autonomous multi-agent software engineering.
 
 # Software Factory Full Build Pack v6.2
 

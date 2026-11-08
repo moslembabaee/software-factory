@@ -27,11 +27,19 @@ export {
   DiagnosticCategorySchema,
   FailureDiagnosticSchema,
   FailureAnalysisSchema,
+  RemediationContextSchema,
+  RemediationTaskProposalSchema,
+  correlateFailureWithDiff,
+  generateRemediationTaskId,
+  synthesizeRemediationTaskProposal,
 } from "./failure-analysis.js";
 export type {
   DiagnosticCategory,
   FailureDiagnostic,
   FailureAnalysis,
+  RemediationContext,
+  RemediationTaskProposal,
+  CorrelatedDiffResult,
 } from "./failure-analysis.js";
 export {
   ExecutionSchema,
@@ -81,7 +89,9 @@ export {
   BuildBudgetUpdateSchema,
   TaskTokensSchema,
   TaskBudgetSchema,
+  FailureModesSchema,
   TaskTelemetrySchema,
+  AgentMetricsSchema,
   BuildMetricsBudgetSchema,
   BuildMetricsSchema,
   canApproveTask,
@@ -93,10 +103,29 @@ export type {
   BuildBudgetUpdate,
   TaskTokens,
   TaskBudget,
+  FailureModes,
   TaskTelemetry,
+  AgentMetrics,
   BuildMetrics,
   BuildMetricsBudget,
 } from "./build.js";
+export {
+  DEFAULT_AGENT_RATES,
+  FAILURE_MODES,
+  nonnegative,
+  parseTokenUsage,
+  calculateTokenCost,
+  validateBudgetCap,
+  computeTaskTelemetry,
+  recordAttemptTelemetry,
+  computeActiveAttempt,
+  computeBuildMetrics,
+  enforceBudget,
+} from "./telemetry.js";
+export type {
+  FailureMode,
+  TaskTelemetryInput,
+} from "./telemetry.js";
 export {
   PullRequestStatusSchema,
   MergeStateStatusSchema,

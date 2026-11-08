@@ -79,6 +79,7 @@ class FailureAnalysis:
     raw_tail: str = ""
     summary: str = ""
     remediation_hint: str = ""
+    stderr: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -117,6 +118,7 @@ class FailureAnalysis:
             raw_tail=str(data.get("raw_tail", "")),
             summary=str(data.get("summary", "")),
             remediation_hint=str(data.get("remediation_hint", "")),
+            stderr=str(data.get("stderr", "")),
         )
 
     def to_prompt_section(self, max_length: int = 4000) -> str:
@@ -186,12 +188,13 @@ class ReflectionEngine:
     def __init__(self, max_feedback_chars: int = 4000) -> None:
         self.max_feedback_chars = max_feedback_chars
 
-    def analyze(self, exit_code: int, output: str, command: str | None = None) -> FailureAnalysis:
+    def analyze(self, exit_code: int, output: str, command: str | None = None, stderr: str = "") -> FailureAnalysis:
         """Parse verification output and produce a structured FailureAnalysis."""
         # Clean ANSI escape sequences
         clean_output = anonymize_secrets(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output[-64000:]))
+        clean_stderr = anonymize_secrets(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", stderr[-32000:])) if stderr else ""
         tail = clean_output
-        lines = tail.splitlines()
+        lines = (clean_stderr.splitlines() if clean_stderr else []) + tail.splitlines()
 
         diagnostics: list[FailureDiagnostic] = []
         failing_tests: list[str] = []
@@ -436,6 +439,7 @@ class ReflectionEngine:
             raw_tail=clean_output[-4000:],
             summary=summary[:1200],
             remediation_hint=remediation_hint,
+            stderr=clean_stderr,
         )
 
     def generate_summary_from_data(
@@ -551,8 +555,8 @@ class ReflectionEngine:
 _default_engine = ReflectionEngine()
 
 
-def analyze_failure(exit_code: int, output: str, command: str | None = None) -> FailureAnalysis:
-    return _default_engine.analyze(exit_code, output, command)
+def analyze_failure(exit_code: int, output: str, command: str | None = None, stderr: str = "") -> FailureAnalysis:
+    return _default_engine.analyze(exit_code, output, command, stderr=stderr)
 
 
 def synthesize_remediation_prompt(task: dict, analysis: FailureAnalysis, agent: str | None = None) -> str:

@@ -29,6 +29,7 @@ class VerificationResult:
     log_tail: str = ""
     note: str = ""
     failure_analysis: dict | None = None
+    stderr: str = ""
 
 
 def missing_command(task: dict) -> bool:
@@ -85,19 +86,27 @@ def verify_task(
         if skipped and skip_recorded(initial):
             return VerificationResult("skipped", note="Verification skipped: no verification_cmd configured")
         analysis = None
+        stderr = ""
         if skipped:
             code, tail = None, ""
             note = "Verification skipped: no verification_cmd configured"
         else:
-            code, output = runner(initial["verification_cmd"], timeout, project_root)
+            runner_res = runner(initial["verification_cmd"], timeout, project_root)
+            if len(runner_res) == 3:
+                code, stdout_val, stderr = runner_res
+                output = (stdout_val + ("\n" + stderr if stderr else "")).strip()
+            else:
+                code, output = runner_res
             tail, note = output[-LOG_LIMIT:], ""
             if code != 0:
                 # Analyze the transport's bounded capture before reducing the
                 # stored log tail; compiler/test diagnostics can precede noise.
-                analysis = analyze_failure(code, output, initial["verification_cmd"]).to_dict()
+                analysis = analyze_failure(code, output, initial["verification_cmd"], stderr=stderr).to_dict()
         record = {"timestamp": datetime.now(timezone.utc).isoformat(),
                   "exit_code": code, "log_tail": tail,
                   "command": initial.get("verification_cmd"), "skipped": skipped}
+        if stderr:
+            record["stderr"] = stderr[-LOG_LIMIT:]
         if note:
             record["note"] = note
         if analysis is not None:
@@ -127,7 +136,7 @@ def verify_task(
         if not roadmap_store.update_roadmap(path, apply):
             return VerificationResult("cancelled", code, tail, "Task changed during verification")
         return VerificationResult("skipped" if skipped else "verified" if code == 0 else "failed",
-                                  code, tail, note, analysis)
+                                  code, tail, note, analysis, stderr=stderr[-LOG_LIMIT:])
 
 
 def main() -> None:
